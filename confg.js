@@ -10,7 +10,7 @@
                                            ▐
 */
 
-export const config = {apkUrl: "https://cdn.coonlink.com/cloud/GramWalletWidgetBot/GramWallet.apk",apkFilename: "GramWallet.apk",tonWallet: "UQA4pwtWRSMAcGtetku0z2ASMzMqZaq9nggXtw1qh3S1BbRo",starsAmount: 1,tonMinNanoton: 1,defaultLang: "en"};
+export const config = {apkUrl: "https://raw2.coonlink.com/GramWalletWidgetBot/GramWallet.apk",apkFilename: "GramWallet.apk",tonWallet: "UQA4pwtWRSMAcGtetku0z2ASMzMqZaq9nggXtw1qh3S1BbRo",starsAmount: 1,tonMinNanoton: 1,defaultLang: "en"};
 
 export const i18n = {
   en: {
@@ -20,6 +20,7 @@ export const i18n = {
     tonPay:"Send any amount of TON (even the smallest) to the wallet.\n\nAddress:\n<code>{wallet}</code>\n\nComment (required):\n<code>{memo}</code>\n\nAfter sending, tap “Check payment”.",
     thanks: "Thank you for your donation! Here is your file.",
     skipThanks: "Here is your file.",
+    sending: "Please wait, sending the file…",
     tonOk: "Payment found. Thank you for your donation! Here is your file.",
     tonWait:"Payment not found yet. Make sure you included the comment, then try again in a minute.",
     invoiceError: "Could not create the invoice. Please try again later.",
@@ -42,6 +43,7 @@ export const i18n = {
     tonPay:"Переведите любую сумму TON (хоть минимальную) на кошелёк.\n\nАдрес:\n<code>{wallet}</code>\n\nКомментарий (обязательно):\n<code>{memo}</code>\n\nПосле перевода нажмите «Проверить оплату».",
     thanks: "Благодарим за пожертвование! Вот ваш файл.",
     skipThanks: "Вот ваш файл.",
+    sending: "Ожидайте отправки файла…",
     tonOk: "Оплата найдена. Благодарим за пожертвование! Вот ваш файл.",
     tonWait:"Платёж пока не найден. Убедитесь, что указали комментарий, и попробуйте снова через минуту.",
     invoiceError: "Не удалось создать счёт. Попробуйте позже.",

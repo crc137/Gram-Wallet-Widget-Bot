@@ -98,7 +98,7 @@ async function onCallback(cq, token, origin) {
 
   if (data === CB.skip) {
     await tg(token, "answerCallbackQuery", { callback_query_id: cq.id });
-    await deliverApk(token, chatId, messageId, t(lang, "skipThanks"), origin);
+    await deliverApk(token, chatId, messageId, t(lang, "skipThanks"), lang);
     return;
   }
 
@@ -129,7 +129,7 @@ async function onCallback(cq, token, origin) {
       return;
     }
     await tg(token, "answerCallbackQuery", { callback_query_id: cq.id });
-    await deliverApk(token, chatId, messageId, t(lang, "tonOk"), origin);
+    await deliverApk(token, chatId, messageId, t(lang, "tonOk"), lang);
     return;
   }
 
@@ -142,12 +142,12 @@ async function onStarsPaid(msg, token, origin) {
   const lang = langOf(msg.from);
   const parts = String(sp.invoice_payload || "").split(":");
   if (parts[0] !== "gw" || parts.length < 4) {
-    await deliverApk(token, msg.chat.id, null, t(lang, "thanks"), origin);
+    await deliverApk(token, msg.chat.id, null, t(lang, "thanks"), lang);
     return;
   }
   const chatId = Number(parts[1]);
   const messageId = Number(parts[2]);
-  await deliverApk(token, chatId || msg.chat.id, messageId || null, t(lang, "thanks"), origin);
+  await deliverApk(token, chatId || msg.chat.id, messageId || null, t(lang, "thanks"), lang);
 }
 
 async function createStarsLink(token, chatId, messageId, userId, lang) {
@@ -185,31 +185,23 @@ async function proxyApk(origin) {
   return new Response(upstream.body, { status: 200, headers });
 }
 
-async function deliverApk(token, chatId, messageId, caption, origin) {
-  const proxyUrl = `${origin}/apk`;
-  const attempts = [proxyUrl, config.apkUrl];
-  let sent = null;
-  for (const document of attempts) {
-    sent = await tg(token, "sendDocument", { chat_id: chatId, document, caption: config.apkFilename });
-    if (sent?.ok) break;
-  }
-  if (!sent?.ok) {
-    const fileRes = await fetch(config.apkUrl, {headers: { "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36", accept: "*/*" },redirect: "follow"});
-    if (fileRes.ok) {
-      const form = new FormData();
-      form.append("chat_id", String(chatId));
-      form.append("caption", config.apkFilename);
-      form.append("document", await fileRes.blob(), config.apkFilename);
-      const res = await fetch(`https://api.telegram.org/bot${token}/sendDocument`, { method: "POST", body: form });
-      sent = await res.json();
-    } else {console.error(JSON.stringify({ apkFetch: fileRes.status, sendErr: sent }))}
-  }
-  if (sent?.ok) {
-    if (messageId) await edit(token, chatId, messageId, caption, []);
+async function deliverApk(token, chatId, messageId, caption, lang) {
+  if (messageId) await edit(token, chatId, messageId, t(lang, "sending"), []);
+  const fileRes = await fetch(config.apkUrl);
+  if (!fileRes.ok) {
+    console.error(JSON.stringify({ apkFetch: fileRes.status }));
     return;
   }
-  console.error(JSON.stringify({ apkFail: sent }));
-  if (messageId) {await edit(token, chatId, messageId, `${caption}\n\n${config.apkUrl}`, [[{ text: config.apkFilename, url: config.apkUrl }]])} else {await tg(token, "sendMessage", {chat_id: chatId,text: `${caption}\n\n${config.apkUrl}`,reply_markup: { inline_keyboard: [[{ text: config.apkFilename, url: config.apkUrl }]] }})}
+  const form = new FormData();
+  form.append("chat_id", String(chatId));
+  form.append("caption", caption);
+  form.append("document", await fileRes.blob(), config.apkFilename);
+  const sent = await (await fetch(`https://api.telegram.org/bot${token}/sendDocument`, { method: "POST", body: form })).json();
+  if (!sent?.ok) {
+    console.error(JSON.stringify({ apkUpload: sent }));
+    return;
+  }
+  if (messageId) await edit(token, chatId, messageId, caption, []);
 }
 
 async function edit(token, chatId, messageId, text, rows, parseMode) {
