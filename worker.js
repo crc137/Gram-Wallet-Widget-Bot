@@ -161,8 +161,21 @@ async function findTonPayment(userId) {
 }
 
 async function deliverApk(token, chatId, messageId, caption) {
-  if (messageId) {await edit(token, chatId, messageId, caption, [])}
-  await tg(token, "sendDocument", {chat_id: chatId,document: config.apkUrl,caption: config.apkFilename});
+  if (messageId) await edit(token, chatId, messageId, caption, []);
+  const byUrl = await tg(token, "sendDocument", {chat_id: chatId, document: config.apkUrl, caption: config.apkFilename});
+  if (byUrl?.ok) return;
+  const fileRes = await fetch(config.apkUrl);
+  if (!fileRes.ok) {
+    console.error(JSON.stringify({apkFetch: fileRes.status, sendErr: byUrl}));
+    return;
+  }
+  const form = new FormData();
+  form.append("chat_id", String(chatId));
+  form.append("caption", config.apkFilename);
+  form.append("document", await fileRes.blob(), config.apkFilename);
+  const res = await fetch(`https://api.telegram.org/bot${token}/sendDocument`, {method: "POST", body: form});
+  const uploaded = await res.json();
+  if (!uploaded?.ok) console.error(JSON.stringify({apkUpload: uploaded, sendErr: byUrl}));
 }
 
 async function edit(token, chatId, messageId, text, rows, parseMode) {

@@ -10,7 +10,7 @@
                                            ▐
 */
 
-export const config = {apkUrl: "http://cdn.coonlink.com/cloud/GramWalletWidgetBot/GramWallet.apk",apkFilename: "GramWallet.apk",tonWallet: "UQA4pwtWRSMAcGtetku0z2ASMzMqZaq9nggXtw1qh3S1BbRo",starsAmount: 1,tonMinNanoton: 1,defaultLang: "en"};
+export const config = {apkUrl: "https://cdn.coonlink.com/cloud/GramWalletWidgetBot/GramWallet.apk",apkFilename: "GramWallet.apk",tonWallet: "UQA4pwtWRSMAcGtetku0z2ASMzMqZaq9nggXtw1qh3S1BbRo",starsAmount: 1,tonMinNanoton: 1,defaultLang: "en"};
 
 export const i18n = {
   en: {
