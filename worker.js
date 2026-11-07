@@ -16,19 +16,12 @@ const CB = {donate: "d",skip: "s",stars: "st",ton: "tn",check: "ck",back: "bk"}
 export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
-    if (request.method === "GET" && url.pathname === "/") {return json({ ok: true, service: "gram-wallet-widget-bot", build: "apk-proxy-2" })}
-    if (request.method === "GET" && url.pathname === "/apk") {return proxyApk(url.origin)}
-    if (request.method === "GET" && url.pathname === "/debug") {
-      if (!env.BOT_TOKEN) return json({ ok: false, error: "BOT_TOKEN missing" }, 500);
-      const probe = await fetch(config.apkUrl, {headers: { "user-agent": "Mozilla/5.0", accept: "*/*" },redirect: "follow"});
-      const [me, hook] = await Promise.all([tg(env.BOT_TOKEN, "getMe", {}),tg(env.BOT_TOKEN, "getWebhookInfo", {})]);
-      return json({build: "apk-proxy-2",welcome: t("en", "welcome"),apkProbe: { status: probe.status, type: probe.headers.get("content-type"), len: probe.headers.get("content-length") },me: me.result || me,webhook: hook.result || hook});
-    }
+    if (request.method === "GET" && url.pathname === "/") {return json({ ok: true, service: "gram-wallet-widget-bot" })}
     if (request.method === "POST" && url.pathname === "/webhook") {
       if (env.WEBHOOK_SECRET && url.searchParams.get("s") !== env.WEBHOOK_SECRET) {return new Response("forbidden", { status: 403 })}
       let update;
       try { update = await request.json(); } catch { return new Response("bad request", { status: 400 }); }
-      await handleUpdate(update, env, url.origin);
+      await handleUpdate(update, env);
       return json({ ok: true });
     }
     if (request.method === "POST" && url.pathname === "/setup") {
@@ -40,9 +33,10 @@ export default {
     }
     return new Response("not found", { status: 404 });
   },
+  async scheduled(event, env, ctx) {ctx.waitUntil(checkNewRelease(env))}
 };
 
-async function handleUpdate(update, env, origin) {
+async function handleUpdate(update, env) {
   const token = env.BOT_TOKEN;
   if (!token) return;
   try {
@@ -51,16 +45,20 @@ async function handleUpdate(update, env, origin) {
       return;
     }
     if (update.callback_query) {
-      await onCallback(update.callback_query, token, origin);
+      await onCallback(update.callback_query, token, env);
       return;
     }
     const msg = update.message;
     if (!msg) return;
     if (msg.successful_payment) {
-      await onStarsPaid(msg, token, origin);
+      await onStarsPaid(msg, token, env);
       return;
     }
-    if (msg.text && msg.text.startsWith("/start")) {await showWelcome(msg.chat.id, token, langOf(msg.from))}
+    if (msg.text && msg.text.startsWith("/start")) {
+      const lang = langOf(msg.from);
+      if (env.KV) await env.KV.put(`sub:${msg.chat.id}`, lang);
+      await showWelcome(msg.chat.id, token, lang);
+    }
   } catch (err) {console.error(JSON.stringify({ err: String(err), stack: err?.stack }))}
 }
 
@@ -73,7 +71,7 @@ async function showWelcome(chatId, token, lang) {
   if (!r?.ok) console.error(JSON.stringify({ startFail: r }));
 }
 
-async function onCallback(cq, token, origin) {
+async function onCallback(cq, token, env) {
   const chatId = cq.message?.chat?.id;
   const messageId = cq.message?.message_id;
   const userId = cq.from?.id;
@@ -136,7 +134,7 @@ async function onCallback(cq, token, origin) {
   await tg(token, "answerCallbackQuery", { callback_query_id: cq.id });
 }
 
-async function onStarsPaid(msg, token, origin) {
+async function onStarsPaid(msg, token, env) {
   const sp = msg.successful_payment;
   if (!sp || sp.currency !== "XTR") return;
   const lang = langOf(msg.from);
@@ -173,37 +171,69 @@ async function findTonPayment(userId) {
   return false;
 }
 
-async function proxyApk(origin) {
-  const upstream = await fetch(config.apkUrl, {headers: { "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36", accept: "*/*" },redirect: "follow"});
-  if (!upstream.ok) {return json({ ok: false, status: upstream.status }, 502);}
-  const headers = new Headers();
-  headers.set("content-type", upstream.headers.get("content-type") || "application/vnd.android.package-archive");
-  headers.set("content-disposition", `attachment; filename="${config.apkFilename}"`);
-  headers.set("cache-control", "public, max-age=3600");
-  const len = upstream.headers.get("content-length");
-  if (len) headers.set("content-length", len);
-  return new Response(upstream.body, { status: 200, headers });
+let apkFileId = null;
+let releaseCache = { at: 0, data: null };
+
+async function getLatestRelease() {
+  if (releaseCache.data && Date.now() - releaseCache.at < 60_000) return releaseCache.data;
+  const res = await fetch(`https://api.github.com/repos/${config.githubRepo}/releases/latest`, {headers: { accept: "application/vnd.github+json", "user-agent": "gram-wallet-widget-bot" }});
+  if (!res.ok) return releaseCache.data;
+  const data = await res.json();
+  releaseCache = { at: Date.now(), data };
+  return data;
 }
 
-let apkFileId = null;
+function apkFromRelease(rel) {
+  const asset = (rel?.assets || []).find((a) => String(a.name || "").toLowerCase().endsWith(".apk"));
+  return {url: asset?.browser_download_url || config.apkUrl,name: asset?.name || config.apkFilename,tag: rel?.tag_name || "",body: String(rel?.body || "").trim()};
+}
+
+function formatChangelog(lang, rel) {
+  const apk = apkFromRelease(rel);
+  if (!apk.tag && !apk.body) return "";
+  const lines = [t(lang, "updateTitle", { version: apk.tag || rel?.name || "" })];
+  const body = apk.body;
+  if (!body) return lines.join("\n");
+  const fixed = [];
+  const added = [];
+  let mode = "";
+  for (const raw of body.split("\n")) {
+    const line = raw.trim();
+    if (!line) continue;
+    const low = line.toLowerCase();
+    if (low.startsWith("### fixed") || low.startsWith("## fixed") || low === "fixed:" || low.startsWith("исправлено")) { mode = "f"; continue; }
+    if (low.startsWith("### added") || low.startsWith("## added") || low === "added:" || low.startsWith("добавлено")) { mode = "a"; continue; }
+    const item = line.replace(/^[-*•]\s*/, "").trim();
+    if (!item || item === "-") continue;
+    if (mode === "f") fixed.push(`• ${item}`);
+    else if (mode === "a") added.push(`• ${item}`);
+    else lines.push(line);
+  }
+  if (fixed.length) { lines.push(""); lines.push(t(lang, "updateFixed")); lines.push(...fixed); }
+  if (added.length) { lines.push(""); lines.push(t(lang, "updateAdded")); lines.push(...added); }
+  return lines.join("\n").trim();
+}
 
 async function deliverApk(token, chatId, messageId, caption, lang) {
   if (messageId) await edit(token, chatId, messageId, t(lang, "sending"), []);
-  let sent = await tg(token, "sendDocument", {chat_id: chatId,document: apkFileId || config.apkUrl,caption});
+  const rel = await getLatestRelease();
+  const apk = apkFromRelease(rel);
+  const notes = formatChangelog(lang, rel);
+  const doneText = notes ? `${caption}\n\n${notes}` : caption;
+  let sent = await tg(token, "sendDocument", { chat_id: chatId, document: apkFileId || apk.url });
   if (!sent?.ok && apkFileId) {
     apkFileId = null;
-    sent = await tg(token, "sendDocument", { chat_id: chatId, document: config.apkUrl, caption });
+    sent = await tg(token, "sendDocument", { chat_id: chatId, document: apk.url });
   }
   if (!sent?.ok) {
-    const fileRes = await fetch(config.apkUrl);
+    const fileRes = await fetch(apk.url, { redirect: "follow" });
     if (!fileRes.ok) {
       console.error(JSON.stringify({ apkFetch: fileRes.status, sendErr: sent }));
       return;
     }
     const form = new FormData();
     form.append("chat_id", String(chatId));
-    form.append("caption", caption);
-    form.append("document", await fileRes.blob(), config.apkFilename);
+    form.append("document", await fileRes.blob(), apk.name);
     sent = await (await fetch(`https://api.telegram.org/bot${token}/sendDocument`, { method: "POST", body: form })).json();
     if (!sent?.ok) {
       console.error(JSON.stringify({ apkUpload: sent }));
@@ -212,7 +242,34 @@ async function deliverApk(token, chatId, messageId, caption, lang) {
   }
   const fileId = sent?.result?.document?.file_id;
   if (fileId) apkFileId = fileId;
-  if (messageId) await edit(token, chatId, messageId, caption, []);
+  if (messageId) await edit(token, chatId, messageId, doneText, []);
+  else await tg(token, "sendMessage", { chat_id: chatId, text: doneText });
+}
+
+async function checkNewRelease(env) {
+  if (!env.BOT_TOKEN || !env.KV) return;
+  const rel = await getLatestRelease();
+  if (!rel?.tag_name) return;
+  const last = await env.KV.get("last_tag");
+  if (last === rel.tag_name) return;
+  if (!last) {
+    await env.KV.put("last_tag", rel.tag_name);
+    return;
+  }
+  apkFileId = null;
+  const apk = apkFromRelease(rel);
+  const list = await env.KV.list({ prefix: "sub:" });
+  let fileId = null;
+  for (const key of list.keys) {
+    const chatId = key.name.slice(4);
+    const lang = (await env.KV.get(key.name)) || config.defaultLang;
+    const text = formatChangelog(lang, rel) || t(lang, "updateTitle", { version: rel.tag_name });
+    await tg(env.BOT_TOKEN, "sendMessage", { chat_id: chatId, text });
+    const sent = await tg(env.BOT_TOKEN, "sendDocument", { chat_id: chatId, document: fileId || apk.url });
+    if (sent?.ok && sent.result?.document?.file_id) fileId = sent.result.document.file_id;
+  }
+  if (fileId) apkFileId = fileId;
+  await env.KV.put("last_tag", rel.tag_name);
 }
 
 async function edit(token, chatId, messageId, text, rows, parseMode) {

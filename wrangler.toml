@@ -7,3 +7,10 @@ enabled = true
 
 [observability.traces]
 enabled = true
+
+[[kv_namespaces]]
+binding = "KV"
+id = "dd570280157c4036a9c4d3df807f4025"
+
+[triggers]
+crons = ["*/10 * * * *"]

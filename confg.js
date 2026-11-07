@@ -10,7 +10,7 @@
                                            ▐
 */
 
-export const config = {apkUrl: "https://github.com/crc137/Gram-Wallet-Widget-Bot/releases/download/26.1.22%28b22%29/GramWallet.26.1.22.b22.apk",apkFilename: "GramWallet.26.1.22.b22.apk",tonWallet: "UQA4pwtWRSMAcGtetku0z2ASMzMqZaq9nggXtw1qh3S1BbRo",starsAmount: 1,tonMinNanoton: 1,defaultLang: "en"};
+export const config = {githubRepo: "crc137/Gram-Wallet-Widget-Bot",apkUrl: "https://github.com/crc137/Gram-Wallet-Widget-Bot/releases/download/26.1.22%28b22%29/GramWallet.26.1.22.b22.apk",apkFilename: "GramWallet.26.1.22.b22.apk",tonWallet: "UQA4pwtWRSMAcGtetku0z2ASMzMqZaq9nggXtw1qh3S1BbRo",starsAmount: 1,tonMinNanoton: 1,defaultLang: "en"};
 
 export const i18n = {
   en: {
@@ -34,7 +34,10 @@ export const i18n = {
     btnBack: "« Back",
     btnPayStars: "Pay {amount} ⭐",
     btnOpenWallet: "Open wallet",
-    btnCheck: "Check payment"
+    btnCheck: "Check payment",
+    updateTitle: "New version {version}",
+    updateFixed: "Fixed:",
+    updateAdded: "Added:",
   },
   ru: {
     welcome:"Gram Wallet Widget\n\nМожете поддержать проект пожертвованием или пропустить и сразу получить APK.",
@@ -57,7 +60,10 @@ export const i18n = {
     btnBack: "« Назад",
     btnPayStars: "Оплатить {amount} ⭐",
     btnOpenWallet: "Открыть кошелёк",
-    btnCheck: "Проверить оплату"
+    btnCheck: "Проверить оплату",
+    updateTitle: "Новая версия {version}",
+    updateFixed: "Исправлено:",
+    updateAdded: "Добавлено:",
   },
 };
 
