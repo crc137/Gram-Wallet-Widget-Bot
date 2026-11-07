@@ -10,7 +10,7 @@
                                            ▐
 */
 
-export const config = {githubRepo: "crc137/Gram-Wallet-Widget-Bot",apkUrl: "https://github.com/crc137/Gram-Wallet-Widget-Bot/releases/download/26.1.22%28b22%29/GramWallet.26.1.22.b22.apk",apkFilename: "GramWallet.26.1.22.b22.apk",tonWallet: "UQA4pwtWRSMAcGtetku0z2ASMzMqZaq9nggXtw1qh3S1BbRo",starsAmount: 1,tonMinNanoton: 1,defaultLang: "en"};
+export const config = {githubRepo: "crc137/Gram-Wallet-Widget-Bot",apkUrl: "https://github.com/crc137/Gram-Wallet-Widget-Bot/releases/download/26.1.22%28b22%29/GramWallet.26.1.22.b22.apk",apkFilename: "GramWallet.26.1.22.b22.apk",tonWallet: "UQCdxFNpC5j-bkMNVd_HB0QQY6AADviQN2mpChp8-hNgI9KT",starsAmount: 1,tonMinNanoton: 1,defaultLang: "en"};
 
 export const i18n = {
   en: {
