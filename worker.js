@@ -16,12 +16,17 @@ const CB = {donate: "d",skip: "s",stars: "st",ton: "tn",check: "ck",back: "bk"}
 export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
-    if (request.method === "GET" && url.pathname === "/") {return json({ ok: true, service: "gram-wallet-widget-bot" })}
+    if (request.method === "GET" && url.pathname === "/") {return json({ ok: true, service: "gram-wallet-widget-bot", build: "welcome-buttons-1" })}
+    if (request.method === "GET" && url.pathname === "/debug") {
+      if (!env.BOT_TOKEN) return json({ ok: false, error: "BOT_TOKEN missing" }, 500);
+      const [me, hook] = await Promise.all([tg(env.BOT_TOKEN, "getMe", {}),tg(env.BOT_TOKEN, "getWebhookInfo", {})]);
+      return json({build: "welcome-buttons-1",welcome: t("en", "welcome"),skipThanks: t("en", "skipThanks"),me: me.result || me,webhook: hook.result || hook});
+    }
     if (request.method === "POST" && url.pathname === "/webhook") {
       if (env.WEBHOOK_SECRET && url.searchParams.get("s") !== env.WEBHOOK_SECRET) {return new Response("forbidden", { status: 403 })}
       let update;
-      try {update = await request.json()} catch {return new Response("bad request", { status: 400 })}
-      ctx.waitUntil(handleUpdate(update, env));
+      try { update = await request.json(); } catch { return new Response("bad request", { status: 400 }); }
+      await handleUpdate(update, env);
       return json({ ok: true });
     }
     if (request.method === "POST" && url.pathname === "/setup") {
@@ -57,8 +62,14 @@ async function handleUpdate(update, env) {
   } catch (err) {console.error(JSON.stringify({ err: String(err), stack: err?.stack }))}
 }
 
-function mainKb(lang) {return [[{ text: t(lang, "btnDonate"), callback_data: CB.donate },{ text: t(lang, "btnSkip"), callback_data: CB.skip }]]}
-async function showWelcome(chatId, token, lang) {await tg(token, "sendMessage", {chat_id: chatId,text: t(lang, "welcome"),reply_markup: { inline_keyboard: mainKb(lang) }})}
+function mainKb(lang) {return [[{ text: t(lang, "btnDonate"), callback_data: CB.donate }, { text: t(lang, "btnSkip"), callback_data: CB.skip }]]}
+
+async function showWelcome(chatId, token, lang) {
+  const text = t(lang, "welcome");
+  const r = await tg(token, "sendMessage", {chat_id: chatId,text,reply_markup: { inline_keyboard: mainKb(lang) }});
+  console.log(JSON.stringify({ start: true, lang, text, tg: r }));
+  if (!r?.ok) console.error(JSON.stringify({ startFail: r }));
+}
 
 async function onCallback(cq, token) {
   const chatId = cq.message?.chat?.id;
@@ -69,6 +80,7 @@ async function onCallback(cq, token) {
     await tg(token, "answerCallbackQuery", { callback_query_id: cq.id });
     return;
   }
+  
   const data = cq.data || "";
 
   if (data === CB.donate) {
