@@ -219,6 +219,16 @@ async function rememberSub(env, chatId, lang) {
   await env.KV.put(`sub:${chatId}`, lang || config.defaultLang);
 }
 
+async function markGot(env, chatId, tag) {
+  if (!env?.KV || chatId == null || !tag) return;
+  await env.KV.put(`got:${chatId}`, tag);
+}
+
+async function alreadyGot(env, chatId, tag) {
+  if (!env?.KV || chatId == null || !tag) return false;
+  return (await env.KV.get(`got:${chatId}`)) === tag;
+}
+
 async function sendApkDocument(token, chatId, apk, fileId) {
   let sent = await tg(token, "sendDocument", { chat_id: chatId, document: fileId || apk.url });
   if (!sent?.ok && fileId) {
@@ -244,15 +254,25 @@ async function deliverApk(token, chatId, messageId, caption, lang, env) {
   if (messageId) await edit(token, chatId, messageId, t(lang, "sending"), []);
   const rel = await getLatestRelease();
   const apk = apkFromRelease(rel);
+  if (env && rel?.tag_name && await alreadyGot(env, chatId, rel.tag_name)) {
+    const text = formatChangelog(lang, rel) || t(lang, "updateTitle", { version: rel.tag_name });
+    const doneText = notesJoin(caption, text);
+    if (messageId) await edit(token, chatId, messageId, doneText, []);
+    else await tg(token, "sendMessage", { chat_id: chatId, text: doneText });
+    return;
+  }
   const notes = formatChangelog(lang, rel);
-  const doneText = notes ? `${caption}\n\n${notes}` : caption;
+  const doneText = notesJoin(caption, notes);
   const sent = await sendApkDocument(token, chatId, apk, apkFileId);
   const fileId = sent?.result?.document?.file_id;
   if (fileId) apkFileId = fileId;
   if (!sent?.ok) return;
+  if (env && rel?.tag_name) await markGot(env, chatId, rel.tag_name);
   if (messageId) await edit(token, chatId, messageId, doneText, []);
   else await tg(token, "sendMessage", { chat_id: chatId, text: doneText });
 }
+
+function notesJoin(caption, notes) {return notes ? `${caption}\n\n${notes}` : caption;}
 
 async function listSubs(env) {
   const keys = [];
@@ -285,15 +305,18 @@ async function checkNewRelease(env) {
   let fileId = null;
   let ok = 0;
   let fail = 0;
+  let skipped = 0;
   for (const key of keys) {
     const chatId = key.name.slice(4);
     try {
+      if (await alreadyGot(env, chatId, rel.tag_name)) {skipped += 1; continue;}
       const lang = (await env.KV.get(key.name)) || config.defaultLang;
       const text = formatChangelog(lang, rel) || t(lang, "updateTitle", { version: rel.tag_name });
       await tg(env.BOT_TOKEN, "sendMessage", { chat_id: chatId, text });
       const sent = await sendApkDocument(env.BOT_TOKEN, chatId, apk, fileId);
       if (sent?.ok) {
         ok += 1;
+        await markGot(env, chatId, rel.tag_name);
         if (sent.result?.document?.file_id) fileId = sent.result.document.file_id;
       } else {fail += 1;}
     } catch (err) {
@@ -303,7 +326,7 @@ async function checkNewRelease(env) {
   }
   if (fileId) apkFileId = fileId;
   await env.KV.put("last_tag", rel.tag_name);
-  console.log(JSON.stringify({ notified: true, tag: rel.tag_name, subs: keys.length, ok, fail }));
+  console.log(JSON.stringify({ notified: true, tag: rel.tag_name, subs: keys.length, ok, fail, skipped }));
 }
 
 async function edit(token, chatId, messageId, text, rows, parseMode) {
