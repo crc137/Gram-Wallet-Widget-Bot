@@ -185,22 +185,33 @@ async function proxyApk(origin) {
   return new Response(upstream.body, { status: 200, headers });
 }
 
+let apkFileId = null;
+
 async function deliverApk(token, chatId, messageId, caption, lang) {
   if (messageId) await edit(token, chatId, messageId, t(lang, "sending"), []);
-  const fileRes = await fetch(config.apkUrl);
-  if (!fileRes.ok) {
-    console.error(JSON.stringify({ apkFetch: fileRes.status }));
-    return;
+  let sent = await tg(token, "sendDocument", {chat_id: chatId,document: apkFileId || config.apkUrl,caption});
+  if (!sent?.ok && apkFileId) {
+    apkFileId = null;
+    sent = await tg(token, "sendDocument", { chat_id: chatId, document: config.apkUrl, caption });
   }
-  const form = new FormData();
-  form.append("chat_id", String(chatId));
-  form.append("caption", caption);
-  form.append("document", await fileRes.blob(), config.apkFilename);
-  const sent = await (await fetch(`https://api.telegram.org/bot${token}/sendDocument`, { method: "POST", body: form })).json();
   if (!sent?.ok) {
-    console.error(JSON.stringify({ apkUpload: sent }));
-    return;
+    const fileRes = await fetch(config.apkUrl);
+    if (!fileRes.ok) {
+      console.error(JSON.stringify({ apkFetch: fileRes.status, sendErr: sent }));
+      return;
+    }
+    const form = new FormData();
+    form.append("chat_id", String(chatId));
+    form.append("caption", caption);
+    form.append("document", await fileRes.blob(), config.apkFilename);
+    sent = await (await fetch(`https://api.telegram.org/bot${token}/sendDocument`, { method: "POST", body: form })).json();
+    if (!sent?.ok) {
+      console.error(JSON.stringify({ apkUpload: sent }));
+      return;
+    }
   }
+  const fileId = sent?.result?.document?.file_id;
+  if (fileId) apkFileId = fileId;
   if (messageId) await edit(token, chatId, messageId, caption, []);
 }
 
