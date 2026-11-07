@@ -56,7 +56,7 @@ async function handleUpdate(update, env) {
     }
     if (msg.text && msg.text.startsWith("/start")) {
       const lang = langOf(msg.from);
-      if (env.KV) await env.KV.put(`sub:${msg.chat.id}`, lang);
+      await rememberSub(env, msg.chat.id, lang);
       await showWelcome(msg.chat.id, token, lang);
     }
   } catch (err) {console.error(JSON.stringify({ err: String(err), stack: err?.stack }))}
@@ -96,7 +96,7 @@ async function onCallback(cq, token, env) {
 
   if (data === CB.skip) {
     await tg(token, "answerCallbackQuery", { callback_query_id: cq.id });
-    await deliverApk(token, chatId, messageId, t(lang, "skipThanks"), lang);
+    await deliverApk(token, chatId, messageId, t(lang, "skipThanks"), lang, env);
     return;
   }
 
@@ -127,7 +127,7 @@ async function onCallback(cq, token, env) {
       return;
     }
     await tg(token, "answerCallbackQuery", { callback_query_id: cq.id });
-    await deliverApk(token, chatId, messageId, t(lang, "tonOk"), lang);
+    await deliverApk(token, chatId, messageId, t(lang, "tonOk"), lang, env);
     return;
   }
 
@@ -140,12 +140,12 @@ async function onStarsPaid(msg, token, env) {
   const lang = langOf(msg.from);
   const parts = String(sp.invoice_payload || "").split(":");
   if (parts[0] !== "gw" || parts.length < 4) {
-    await deliverApk(token, msg.chat.id, null, t(lang, "thanks"), lang);
+    await deliverApk(token, msg.chat.id, null, t(lang, "thanks"), lang, env);
     return;
   }
   const chatId = Number(parts[1]);
   const messageId = Number(parts[2]);
-  await deliverApk(token, chatId || msg.chat.id, messageId || null, t(lang, "thanks"), lang);
+  await deliverApk(token, chatId || msg.chat.id, messageId || null, t(lang, "thanks"), lang, env);
 }
 
 async function createStarsLink(token, chatId, messageId, userId, lang) {
@@ -214,36 +214,55 @@ function formatChangelog(lang, rel) {
   return lines.join("\n").trim();
 }
 
-async function deliverApk(token, chatId, messageId, caption, lang) {
-  if (messageId) await edit(token, chatId, messageId, t(lang, "sending"), []);
-  const rel = await getLatestRelease();
-  const apk = apkFromRelease(rel);
-  const notes = formatChangelog(lang, rel);
-  const doneText = notes ? `${caption}\n\n${notes}` : caption;
-  let sent = await tg(token, "sendDocument", { chat_id: chatId, document: apkFileId || apk.url });
-  if (!sent?.ok && apkFileId) {
-    apkFileId = null;
+async function rememberSub(env, chatId, lang) {
+  if (!env?.KV || chatId == null) return;
+  await env.KV.put(`sub:${chatId}`, lang || config.defaultLang);
+}
+
+async function sendApkDocument(token, chatId, apk, fileId) {
+  let sent = await tg(token, "sendDocument", { chat_id: chatId, document: fileId || apk.url });
+  if (!sent?.ok && fileId) {
     sent = await tg(token, "sendDocument", { chat_id: chatId, document: apk.url });
   }
   if (!sent?.ok) {
     const fileRes = await fetch(apk.url, { redirect: "follow" });
     if (!fileRes.ok) {
-      console.error(JSON.stringify({ apkFetch: fileRes.status, sendErr: sent }));
-      return;
+      console.error(JSON.stringify({ apkFetch: fileRes.status, sendErr: sent, chatId }));
+      return sent;
     }
     const form = new FormData();
     form.append("chat_id", String(chatId));
     form.append("document", await fileRes.blob(), apk.name);
     sent = await (await fetch(`https://api.telegram.org/bot${token}/sendDocument`, { method: "POST", body: form })).json();
-    if (!sent?.ok) {
-      console.error(JSON.stringify({ apkUpload: sent }));
-      return;
-    }
+    if (!sent?.ok) console.error(JSON.stringify({ apkUpload: sent, chatId }));
   }
+  return sent;
+}
+
+async function deliverApk(token, chatId, messageId, caption, lang, env) {
+  if (env) await rememberSub(env, chatId, lang);
+  if (messageId) await edit(token, chatId, messageId, t(lang, "sending"), []);
+  const rel = await getLatestRelease();
+  const apk = apkFromRelease(rel);
+  const notes = formatChangelog(lang, rel);
+  const doneText = notes ? `${caption}\n\n${notes}` : caption;
+  const sent = await sendApkDocument(token, chatId, apk, apkFileId);
   const fileId = sent?.result?.document?.file_id;
   if (fileId) apkFileId = fileId;
+  if (!sent?.ok) return;
   if (messageId) await edit(token, chatId, messageId, doneText, []);
   else await tg(token, "sendMessage", { chat_id: chatId, text: doneText });
+}
+
+async function listSubs(env) {
+  const keys = [];
+  let cursor;
+  do {
+    const page = await env.KV.list({ prefix: "sub:", cursor });
+    keys.push(...(page.keys || []));
+    cursor = page.list_complete ? null : page.cursor;
+  } while (cursor);
+  return keys;
 }
 
 async function checkNewRelease(env) {
@@ -258,18 +277,33 @@ async function checkNewRelease(env) {
   }
   apkFileId = null;
   const apk = apkFromRelease(rel);
-  const list = await env.KV.list({ prefix: "sub:" });
+  if (!apk.url) {
+    console.error(JSON.stringify({ noApk: rel.tag_name }));
+    return;
+  }
+  const keys = await listSubs(env);
   let fileId = null;
-  for (const key of list.keys) {
+  let ok = 0;
+  let fail = 0;
+  for (const key of keys) {
     const chatId = key.name.slice(4);
-    const lang = (await env.KV.get(key.name)) || config.defaultLang;
-    const text = formatChangelog(lang, rel) || t(lang, "updateTitle", { version: rel.tag_name });
-    await tg(env.BOT_TOKEN, "sendMessage", { chat_id: chatId, text });
-    const sent = await tg(env.BOT_TOKEN, "sendDocument", { chat_id: chatId, document: fileId || apk.url });
-    if (sent?.ok && sent.result?.document?.file_id) fileId = sent.result.document.file_id;
+    try {
+      const lang = (await env.KV.get(key.name)) || config.defaultLang;
+      const text = formatChangelog(lang, rel) || t(lang, "updateTitle", { version: rel.tag_name });
+      await tg(env.BOT_TOKEN, "sendMessage", { chat_id: chatId, text });
+      const sent = await sendApkDocument(env.BOT_TOKEN, chatId, apk, fileId);
+      if (sent?.ok) {
+        ok += 1;
+        if (sent.result?.document?.file_id) fileId = sent.result.document.file_id;
+      } else {fail += 1;}
+    } catch (err) {
+      fail += 1;
+      console.error(JSON.stringify({ notifyFail: String(err), chatId }));
+    }
   }
   if (fileId) apkFileId = fileId;
   await env.KV.put("last_tag", rel.tag_name);
+  console.log(JSON.stringify({ notified: true, tag: rel.tag_name, subs: keys.length, ok, fail }));
 }
 
 async function edit(token, chatId, messageId, text, rows, parseMode) {
