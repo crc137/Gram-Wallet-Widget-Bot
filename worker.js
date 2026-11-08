@@ -17,6 +17,21 @@ export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
     if (request.method === "GET" && url.pathname === "/") {return json({ ok: true, service: "gram-wallet-widget-bot" })}
+    if (request.method === "GET" && url.pathname === "/donor") {
+      const address = String(url.searchParams.get("address") || "").trim();
+      if (!address) return json({ ok: false, donor: false, error: "address required" }, 400);
+      const donor = await isDonorAddress(env, address);
+      return json({ ok: true, donor });
+    }
+    if (request.method === "POST" && url.pathname === "/donor/claim") {
+      let body;
+      try { body = await request.json(); } catch { return json({ ok: false, donor: false, error: "bad json" }, 400); }
+      const address = String(body?.address || "").trim();
+      const code = String(body?.code || "").trim().toUpperCase();
+      if (!address || !code) return json({ ok: false, donor: false, error: "address and code required" }, 400);
+      const donor = await claimDonorCode(env, address, code);
+      return json({ ok: true, donor });
+    }
     if (request.method === "POST" && url.pathname === "/webhook") {
       if (env.WEBHOOK_SECRET && url.searchParams.get("s") !== env.WEBHOOK_SECRET) {return new Response("forbidden", { status: 403 })}
       let update;
@@ -126,8 +141,11 @@ async function onCallback(cq, token, env) {
       await tg(token, "answerCallbackQuery", {callback_query_id: cq.id,text: t(lang, "tonWait"),show_alert: true});
       return;
     }
+    await markDonorTg(env, userId);
+    if (found.source) await markDonorAddr(env, found.source);
     await tg(token, "answerCallbackQuery", { callback_query_id: cq.id });
-    await deliverApk(token, chatId, messageId, t(lang, "tonOk"), lang, env);
+    const code = await issueDonorCode(env, userId);
+    await deliverApk(token, chatId, messageId, notesJoin(t(lang, "tonOk"), t(lang, "donorCode", { code })), lang, env);
     return;
   }
 
@@ -138,14 +156,18 @@ async function onStarsPaid(msg, token, env) {
   const sp = msg.successful_payment;
   if (!sp || sp.currency !== "XTR") return;
   const lang = langOf(msg.from);
+  const userId = msg.from?.id;
+  if (userId) await markDonorTg(env, userId);
+  const code = userId ? await issueDonorCode(env, userId) : "";
+  const caption = code ? notesJoin(t(lang, "thanks"), t(lang, "donorCode", { code })) : t(lang, "thanks");
   const parts = String(sp.invoice_payload || "").split(":");
   if (parts[0] !== "gw" || parts.length < 4) {
-    await deliverApk(token, msg.chat.id, null, t(lang, "thanks"), lang, env);
+    await deliverApk(token, msg.chat.id, null, caption, lang, env);
     return;
   }
   const chatId = Number(parts[1]);
   const messageId = Number(parts[2]);
-  await deliverApk(token, chatId || msg.chat.id, messageId || null, t(lang, "thanks"), lang, env);
+  await deliverApk(token, chatId || msg.chat.id, messageId || null, caption, lang, env);
 }
 
 async function createStarsLink(token, chatId, messageId, userId, lang) {
@@ -159,14 +181,87 @@ async function findTonPayment(userId) {
   const memo = tonMemo(userId);
   const addr = encodeURIComponent(config.tonWallet);
   const res = await fetch(`https://toncenter.com/api/v2/getTransactions?address=${addr}&limit=40`,{ headers: { accept: "application/json" } });
-  if (!res.ok) return false;
+  if (!res.ok) return null;
   const data = await res.json();
   const txs = data.result || [];
   for (const tx of txs) {
     const inMsg = tx.in_msg;
     if (!inMsg) continue;
     if (Number(inMsg.value || 0) < config.tonMinNanoton) continue;
-    if (String(inMsg.message || "").trim() === memo) return true;
+    if (String(inMsg.message || "").trim() === memo) return { source: String(inMsg.source || "").trim() || null };
+  }
+  return null;
+}
+
+function addrKeys(address) {
+  const s = String(address || "").trim();
+  if (!s) return [];
+  const keys = new Set([s]);
+  if (/^[EeUu][Qq]/.test(s) && s.length >= 2) {
+    keys.add("UQ" + s.slice(2));
+    keys.add("EQ" + s.slice(2));
+    keys.add("Uq" + s.slice(2));
+    keys.add("Eq" + s.slice(2));
+  }
+  return [...keys];
+}
+
+function sameAddr(a, b) {
+  const left = new Set(addrKeys(a));
+  for (const k of addrKeys(b)) if (left.has(k)) return true;
+  return false;
+}
+
+async function markDonorTg(env, userId) {
+  if (!env?.KV || userId == null) return;
+  await env.KV.put(`donor:tg:${userId}`, "1");
+}
+
+async function markDonorAddr(env, address) {
+  if (!env?.KV || !address) return;
+  for (const key of addrKeys(address)) await env.KV.put(`donor:addr:${key}`, "1");
+}
+
+async function issueDonorCode(env, userId) {
+  if (!env?.KV || userId == null) return "";
+  const existing = await env.KV.get(`donor:tgcode:${userId}`);
+  if (existing) return existing;
+  const alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+  let code = "";
+  for (let i = 0; i < 8; i++) code += alphabet[Math.floor(Math.random() * alphabet.length)];
+  await env.KV.put(`donor:code:${code}`, String(userId));
+  await env.KV.put(`donor:tgcode:${userId}`, code);
+  return code;
+}
+
+async function claimDonorCode(env, address, code) {
+  if (!env?.KV) return false;
+  const userId = await env.KV.get(`donor:code:${code}`);
+  if (!userId) return false;
+  await markDonorTg(env, userId);
+  await markDonorAddr(env, address);
+  return true;
+}
+
+async function isDonorAddress(env, address) {
+  if (env?.KV) {for (const key of addrKeys(address)) {if (await env.KV.get(`donor:addr:${key}`)) return true;}}
+  if (await donatedFromAddress(address)) {
+    if (env?.KV) await markDonorAddr(env, address);
+    return true;
+  }
+  return false;
+}
+
+async function donatedFromAddress(address) {
+  const addr = encodeURIComponent(address);
+  const res = await fetch(`https://toncenter.com/api/v2/getTransactions?address=${addr}&limit=50`, { headers: { accept: "application/json" } });
+  if (!res.ok) return false;
+  const data = await res.json();
+  for (const tx of data.result || []) {
+    for (const msg of tx.out_msgs || []) {
+      if (Number(msg.value || 0) < config.tonMinNanoton) continue;
+      if (sameAddr(msg.destination, config.tonWallet)) return true;
+    }
   }
   return false;
 }
