@@ -10,7 +10,7 @@
                                            ▐
 */
 
-export const config = {githubRepo: "crc137/Gram-Wallet-Widget-Bot",githubTags: "https://api.github.com/repos/crc137/Gram-Wallet-Widget-Bot/tags",apkUrl: "https://github.com/crc137/Gram-Wallet-Widget-Bot/releases/download/26.1.73%28b73%29/GramWallet.26.1.73.b73.apk",apkFilename: "GramWallet.26.1.73.b73.apk",tonWallet: "UQCdxFNpC5j-bkMNVd_HB0QQY6AADviQN2mpChp8-hNgI9KT",starsAmount: 1,tonMinNanoton: 1,defaultLang: "en"};
+export const config = {githubRepo: "crc137/Gram-Wallet-Widget-Bot",githubTags: "https://api.github.com/repos/crc137/Gram-Wallet-Widget-Bot/tags",tonWallet: "UQCdxFNpC5j-bkMNVd_HB0QQY6AADviQN2mpChp8-hNgI9KT",starsAmount: 1,tonMinNanoton: 1,defaultLang: "en"};
 
 export const i18n = {
   en: {
@@ -46,7 +46,7 @@ export const i18n = {
     starsPay: "Оплата Telegram Stars.\nНажмите кнопку ниже — достаточно 1 ⭐.",
     tonPay:"Переведите любую сумму TON (хоть минимальную) на кошелёк.\n\nАдрес:\n<code>{wallet}</code>\n\nКомментарий (обязательно):\n<code>{memo}</code>\n\nПосле перевода нажмите «Проверить оплату».",
     thanks: "Благодарим за пожертвование! Вот ваш файл.",
-    donorCode: "Код спонсора для значка в приложении:\n{code}\n\nВ Gram Wallet: долгий тап по GRAM WALLET ➜ введите код.",
+    donorCode: "Код спонсора для значка в приложении:\n<code>{code}</code>\n\nВ Gram Wallet: долгий тап по GRAM WALLET ➜ введите код.",
     skipThanks: "Вот ваш файл.",
     sending: "Ожидайте отправки файла…",
     tonOk: "Оплата найдена. Благодарим за пожертвование! Вот ваш файл.",
