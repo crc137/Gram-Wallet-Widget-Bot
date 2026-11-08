@@ -19,7 +19,7 @@ export const i18n = {
     starsPay: "Pay with Telegram Stars.\nTap the button below — 1 ⭐ is enough.",
     tonPay:"Send any amount of TON (even the smallest) to the wallet.\n\nAddress:\n<code>{wallet}</code>\n\nComment (required):\n<code>{memo}</code>\n\nAfter sending, tap “Check payment”.",
     thanks: "Thank you for your donation! Here is your file.",
-    donorCode: "Supporter code for the app badge:\n{code}\n\nIn Gram Wallet: long-press GRAM WALLET ➜ enter the code.",
+    donorCode: "Supporter code for the app badge:\n<code>{code}</code>\n\nIn Gram Wallet: long-press GRAM WALLET ➜ enter the code.",
     skipThanks: "Here is your file.",
     sending: "Please wait, sending the file…",
     tonOk: "Payment found. Thank you for your donation! Here is your file.",
