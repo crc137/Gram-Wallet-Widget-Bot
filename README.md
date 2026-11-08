@@ -1,6 +1,6 @@
 <div align="center">
   <a href="https://github.com/coonlink">
-    <img width="90px" src="android/app/src/main/res/mipmap-xxxhdpi/ic_launcher.png" alt="Logo" />
+    <img width="90px" src="https://raw.githubusercontent.com/crc137/Gram-Wallet-Widget-Apk/main/android/app/src/main/res/mipmap-xxxhdpi/ic_launcher.png" alt="Logo" />
   </a>
   <h1>Gram Wallet</h1>
 
