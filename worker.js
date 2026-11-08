@@ -383,25 +383,34 @@ async function deliverApk(token, chatId, messageId, caption, lang, env) {
   if (messageId) await edit(token, chatId, messageId, t(lang, "sending"), []);
   const rel = await getLatestRelease();
   const apk = apkFromRelease(rel);
+  const html = /<code>/.test(caption || "");
   if (env && rel?.tag_name && await alreadyGot(env, chatId, rel.tag_name)) {
     const text = formatChangelog(lang, rel) || t(lang, "updateTitle", { version: rel.tag_name });
-    const doneText = notesJoin(caption, text);
-    if (messageId) await edit(token, chatId, messageId, doneText, []);
-    else await tg(token, "sendMessage", { chat_id: chatId, text: doneText });
+    const doneText = notesJoin(caption, html ? htmlEscape(text) : text);
+    await sendDoneText(token, chatId, messageId, doneText, html);
     return;
   }
   const notes = formatChangelog(lang, rel);
-  const doneText = notesJoin(caption, notes);
+  const doneText = notesJoin(caption, html && notes ? htmlEscape(notes) : notes);
   const sent = await sendApkDocument(token, chatId, apk, cachedApkFileId(apk.tag));
   const fileId = sent?.result?.document?.file_id;
   if (fileId) rememberApkFileId(apk.tag, fileId);
   if (!sent?.ok) return;
   if (env && rel?.tag_name) await markGot(env, chatId, rel.tag_name);
-  if (messageId) await edit(token, chatId, messageId, doneText, []);
-  else await tg(token, "sendMessage", { chat_id: chatId, text: doneText });
+  await sendDoneText(token, chatId, messageId, doneText, html);
 }
 
 function notesJoin(caption, notes) {return notes ? `${caption}\n\n${notes}` : caption;}
+function htmlEscape(s) {return String(s || "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");}
+async function sendDoneText(token, chatId, messageId, text, html) {
+  const mode = html ? "HTML" : undefined;
+  if (messageId) await edit(token, chatId, messageId, text, [], mode);
+  else {
+    const body = { chat_id: chatId, text };
+    if (mode) body.parse_mode = mode;
+    await tg(token, "sendMessage", body);
+  }
+}
 
 async function listSubs(env) {
   const keys = [];
