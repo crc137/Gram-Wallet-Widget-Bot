@@ -266,16 +266,50 @@ async function donatedFromAddress(address) {
   return false;
 }
 
-let apkFileId = null;
+let apkCache = { tag: "", fileId: null };
 let releaseCache = { at: 0, data: null };
+
+const ghHeaders = { accept: "application/vnd.github+json", "user-agent": "gram-wallet-widget-bot" };
 
 async function getLatestRelease() {
   if (releaseCache.data && Date.now() - releaseCache.at < 60_000) return releaseCache.data;
-  const res = await fetch(`https://api.github.com/repos/${config.githubRepo}/releases/latest`, {headers: { accept: "application/vnd.github+json", "user-agent": "gram-wallet-widget-bot" }});
-  if (!res.ok) return releaseCache.data;
+  const fromTags = await releaseFromTags();
+  if (fromTags) {
+    releaseCache = { at: Date.now(), data: fromTags };
+    return fromTags;
+  }
+  const res = await fetch(`https://api.github.com/repos/${config.githubRepo}/releases/latest`, { headers: ghHeaders });
+  if (!res.ok) {
+    console.error(JSON.stringify({ githubLatest: res.status }));
+    return releaseCache.data;
+  }
   const data = await res.json();
   releaseCache = { at: Date.now(), data };
   return data;
+}
+
+async function releaseFromTags() {
+  const tagsRes = await fetch(config.githubTags, { headers: ghHeaders });
+  if (!tagsRes.ok) {
+    console.error(JSON.stringify({ githubTags: tagsRes.status }));
+    return null;
+  }
+  const tags = await tagsRes.json();
+  const tag = Array.isArray(tags) ? tags.find((item) => item?.name)?.name : "";
+  if (!tag) return null;
+  const relRes = await fetch(`https://api.github.com/repos/${config.githubRepo}/releases/tags/${encodeURIComponent(tag)}`, { headers: ghHeaders });
+  if (!relRes.ok) {
+    console.error(JSON.stringify({ githubTagRelease: relRes.status, tag }));
+    return null;
+  }
+  return relRes.json();
+}
+
+function cachedApkFileId(tag) {return tag && apkCache.tag === tag ? apkCache.fileId : null;}
+
+function rememberApkFileId(tag, fileId) {
+  if (!tag || !fileId) return;
+  apkCache = { tag, fileId };
 }
 
 function apkFromRelease(rel) {
@@ -358,9 +392,9 @@ async function deliverApk(token, chatId, messageId, caption, lang, env) {
   }
   const notes = formatChangelog(lang, rel);
   const doneText = notesJoin(caption, notes);
-  const sent = await sendApkDocument(token, chatId, apk, apkFileId);
+  const sent = await sendApkDocument(token, chatId, apk, cachedApkFileId(apk.tag));
   const fileId = sent?.result?.document?.file_id;
-  if (fileId) apkFileId = fileId;
+  if (fileId) rememberApkFileId(apk.tag, fileId);
   if (!sent?.ok) return;
   if (env && rel?.tag_name) await markGot(env, chatId, rel.tag_name);
   if (messageId) await edit(token, chatId, messageId, doneText, []);
@@ -390,7 +424,7 @@ async function checkNewRelease(env) {
     await env.KV.put("last_tag", rel.tag_name);
     return;
   }
-  apkFileId = null;
+  apkCache = { tag: "", fileId: null };
   const apk = apkFromRelease(rel);
   if (!apk.url) {
     console.error(JSON.stringify({ noApk: rel.tag_name }));
@@ -419,7 +453,7 @@ async function checkNewRelease(env) {
       console.error(JSON.stringify({ notifyFail: String(err), chatId }));
     }
   }
-  if (fileId) apkFileId = fileId;
+  if (fileId) rememberApkFileId(rel.tag_name, fileId);
   await env.KV.put("last_tag", rel.tag_name);
   console.log(JSON.stringify({ notified: true, tag: rel.tag_name, subs: keys.length, ok, fail, skipped }));
 }
