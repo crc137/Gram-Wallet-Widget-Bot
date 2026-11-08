@@ -390,12 +390,6 @@ async function deliverApk(token, chatId, messageId, caption, lang, env) {
   const rel = await getLatestRelease();
   const apk = apkFromRelease(rel);
   const html = /<code>/.test(caption || "");
-  if (env && rel?.tag_name && await alreadyGot(env, chatId, rel.tag_name)) {
-    const text = formatChangelog(lang, rel) || t(lang, "updateTitle", { version: rel.tag_name });
-    const doneText = notesJoin(caption, html ? htmlEscape(text) : text);
-    await sendDoneText(token, chatId, messageId, doneText, html);
-    return;
-  }
   const notes = formatChangelog(lang, rel);
   const doneText = notesJoin(caption, html && notes ? htmlEscape(notes) : notes);
   if (!apk.url) {
