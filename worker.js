@@ -50,6 +50,11 @@ export default {
       const r = await tg(env.BOT_TOKEN, "setWebhook", {url: hook,allowed_updates: ["message", "callback_query", "pre_checkout_query"],drop_pending_updates: true});
       return json(r);
     }
+    if (request.method === "POST" && url.pathname === "/push-channel") {
+      if (!env.BOT_TOKEN) return json({ ok: false, error: "BOT_TOKEN missing" }, 500);
+      const out = await pushReleaseToChannel(env);
+      return json(out, out.ok ? 200 : 502);
+    }
     return new Response("not found", { status: 404 });
   },
   async scheduled(event, env, ctx) {ctx.waitUntil(checkNewRelease(env))}
@@ -528,6 +533,48 @@ async function listSubs(env) {
   return keys;
 }
 
+function channelTargets() {
+  const ids = Array.isArray(config.channelChatIds) ? config.channelChatIds.slice() : [];
+  if (config.channelChatId && !ids.includes(config.channelChatId)) ids.unshift(config.channelChatId);
+  return ids.map((x) => String(x || "").trim()).filter(Boolean);
+}
+
+async function postReleaseToChannel(token, rel, apk, fileId) {
+  const targets = channelTargets();
+  if (!targets.length) return { ok: false, error: "no_channel", fileId: fileId || null };
+  const lang = config.channelLang || "ru";
+  const text = formatChangelog(lang, rel) || t(lang, "updateTitle", { version: rel.tag_name });
+  let last = null;
+  let used = null;
+  let nextFileId = fileId || null;
+  for (const chatId of targets) {
+    try {
+      await tg(token, "sendMessage", { chat_id: chatId, text });
+      const sent = await sendApkDocument(token, chatId, apk, nextFileId);
+      last = sent;
+      if (sent?.ok) {
+        used = chatId;
+        if (sent.result?.document?.file_id) nextFileId = sent.result.document.file_id;
+        break;
+      }
+      console.error(JSON.stringify({ channelSend: sent, chatId }));
+    } catch (err) {
+      console.error(JSON.stringify({ channelFail: String(err), chatId }));
+    }
+  }
+  return { ok: !!last?.ok, chatId: used, fileId: nextFileId, result: last };
+}
+
+async function pushReleaseToChannel(env) {
+  const rel = await getLatestRelease();
+  if (!rel?.tag_name) return { ok: false, error: "no_release" };
+  const apk = apkFromRelease(rel);
+  if (!apk.url) return { ok: false, error: "no_apk", tag: rel.tag_name };
+  const out = await postReleaseToChannel(env.BOT_TOKEN, rel, apk, cachedApkFileId(apk.tag));
+  if (out.fileId) rememberApkFileId(apk.tag, out.fileId);
+  return { ok: !!out.ok, tag: rel.tag_name, chatId: out.chatId || null, error: out.error || null };
+}
+
 async function checkNewRelease(env) {
   if (!env.BOT_TOKEN || !env.KV) return;
   const rel = await getLatestRelease();
@@ -544,8 +591,11 @@ async function checkNewRelease(env) {
     console.error(JSON.stringify({ noApk: rel.tag_name }));
     return;
   }
-  const keys = await listSubs(env);
   let fileId = null;
+  const channel = await postReleaseToChannel(env.BOT_TOKEN, rel, apk, null);
+  if (channel.fileId) fileId = channel.fileId;
+  if (!channel.ok) console.error(JSON.stringify({ channelNotify: channel }));
+  const keys = await listSubs(env);
   let ok = 0;
   let fail = 0;
   let skipped = 0;
@@ -569,7 +619,7 @@ async function checkNewRelease(env) {
   }
   if (fileId) rememberApkFileId(rel.tag_name, fileId);
   await env.KV.put("last_tag", rel.tag_name);
-  console.log(JSON.stringify({ notified: true, tag: rel.tag_name, subs: keys.length, ok, fail, skipped }));
+  console.log(JSON.stringify({ notified: true, tag: rel.tag_name, channel: !!channel.ok, subs: keys.length, ok, fail, skipped }));
 }
 
 async function edit(token, chatId, messageId, text, rows, parseMode) {
