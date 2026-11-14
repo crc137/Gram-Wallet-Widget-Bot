@@ -534,8 +534,10 @@ async function listSubs(env) {
 }
 
 function channelTargets() {
+  const fallback = ["@GramWalletWidget", "-1003916775056"];
   const ids = Array.isArray(config.channelChatIds) ? config.channelChatIds.slice() : [];
   if (config.channelChatId && !ids.includes(config.channelChatId)) ids.unshift(config.channelChatId);
+  for (const id of fallback) if (!ids.includes(id)) ids.push(id);
   return ids.map((x) => String(x || "").trim()).filter(Boolean);
 }
 
