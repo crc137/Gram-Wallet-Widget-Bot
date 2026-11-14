@@ -11,7 +11,7 @@
 */
 
 import { config, t, langOf } from "./confg.js"
-const CB = {donate: "d",skip: "s",stars: "st",ton: "tn",check: "ck",back: "bk"}
+const CB = {donate: "d",skip: "s",stars: "st",ton: "tn",card: "cd",check: "ck",cardCheck: "cc",back: "bk"}
 
 export default {
   async fetch(request, env, ctx) {
@@ -70,7 +70,7 @@ async function handleUpdate(update, env) {
     const msg = update.message;
     if (!msg) return;
     if (msg.successful_payment) {
-      await onStarsPaid(msg, token, env);
+      await onPaid(msg, token, env);
       return;
     }
     if (msg.text && msg.text.startsWith("/start")) {
@@ -103,7 +103,7 @@ async function onCallback(cq, token, env) {
 
   if (data === CB.donate) {
     await tg(token, "answerCallbackQuery", { callback_query_id: cq.id });
-    await edit(token, chatId, messageId, t(lang, "donateMenu"), [[{ text: t(lang, "btnStars"), callback_data: CB.stars },{ text: t(lang, "btnTon"), callback_data: CB.ton }],[{ text: t(lang, "btnBack"), callback_data: CB.back }]]);
+    await edit(token, chatId, messageId, t(lang, "donateMenu"), [[{ text: t(lang, "btnStars"), callback_data: CB.stars },{ text: t(lang, "btnTon"), callback_data: CB.ton }],[{ text: t(lang, "btnCard"), callback_data: CB.card }],[{ text: t(lang, "btnBack"), callback_data: CB.back }]]);
     return;
   }
 
@@ -139,6 +139,31 @@ async function onCallback(cq, token, env) {
     return;
   }
 
+  if (data === CB.card) {
+    await tg(token, "answerCallbackQuery", { callback_query_id: cq.id });
+    const amount = (config.cardAmount / 100).toFixed(2);
+    const checkout = await createSumUpCheckout(env, userId, lang);
+    if (!checkout?.url) {
+      await edit(token, chatId, messageId, t(lang, "invoiceError"), [[{ text: t(lang, "btnBack"), callback_data: CB.donate }]]);
+      return;
+    }
+    await edit(token, chatId, messageId, t(lang, "cardPay"), [[{ text: t(lang, "btnPayCard", { amount, currency: config.cardCurrency }), url: checkout.url }],[{ text: t(lang, "btnCheck"), callback_data: CB.cardCheck }],[{ text: t(lang, "btnBack"), callback_data: CB.donate }]]);
+    return;
+  }
+
+  if (data === CB.cardCheck) {
+    const paid = await findSumUpPayment(env, userId);
+    if (!paid) {
+      await tg(token, "answerCallbackQuery", {callback_query_id: cq.id,text: t(lang, "cardWait"),show_alert: true});
+      return;
+    }
+    await markDonorTg(env, userId);
+    await tg(token, "answerCallbackQuery", { callback_query_id: cq.id });
+    const code = await issueDonorCode(env, userId);
+    await deliverApk(token, chatId, messageId, notesJoin(t(lang, "cardOk"), t(lang, "donorCode", { code })), lang, env);
+    return;
+  }
+
   if (data === CB.check) {
     const found = await findTonPayment(userId);
     if (!found) {
@@ -156,7 +181,7 @@ async function onCallback(cq, token, env) {
   await tg(token, "answerCallbackQuery", { callback_query_id: cq.id });
 }
 
-async function onStarsPaid(msg, token, env) {
+async function onPaid(msg, token, env) {
   const sp = msg.successful_payment;
   if (!sp || sp.currency !== "XTR") return;
   const lang = langOf(msg.from);
@@ -177,6 +202,46 @@ async function onStarsPaid(msg, token, env) {
 async function createStarsLink(token, chatId, messageId, userId, lang) {
   const r = await tg(token, "createInvoiceLink", {title: t(lang, "invoiceTitle"),description: t(lang, "invoiceDesc"),payload: `gw:${chatId}:${messageId}:${userId}`,provider_token: "",currency: "XTR",prices: [{ label: t(lang, "invoiceLabel"), amount: config.starsAmount }]});
   return r?.ok ? r.result : null;
+}
+
+function sumupPendingKey(userId) {return `sumup:pending:${userId}`}
+
+async function createSumUpCheckout(env, userId, lang) {
+  const apiKey = String(env.SUMUP_API_KEY || "").trim();
+  const merchant = String(env.SUMUP_MERCHANT_CODE || config.sumupMerchantCode || "").trim();
+  if (!apiKey || !merchant) return null;
+  const amount = Math.round(config.cardAmount) / 100;
+  const checkout_reference = `gw${userId}-${Date.now()}`.slice(0, 64);
+  const res = await fetch("https://api.sumup.com/v0.1/checkouts", {method: "POST",headers: {authorization: `Bearer ${apiKey}`,"content-type": "application/json"},body: JSON.stringify({merchant_code: merchant,amount,currency: config.cardCurrency,checkout_reference,description: t(lang, "invoiceDesc"),hosted_checkout: { enabled: true }})});
+  if (!res.ok) {
+    console.error(JSON.stringify({ sumupCreate: res.status, body: await res.text().catch(() => "") }));
+    return null;
+  }
+  const data = await res.json();
+  const url = data.hosted_checkout_url || null;
+  const id = data.id || null;
+  if (!url || !id) return null;
+  if (env.KV) await env.KV.put(sumupPendingKey(userId), JSON.stringify({ id, ref: checkout_reference }), { expirationTtl: 60 * 60 });
+  return { url, id };
+}
+
+async function findSumUpPayment(env, userId) {
+  const apiKey = String(env.SUMUP_API_KEY || "").trim();
+  if (!apiKey || !env.KV) return false;
+  const raw = await env.KV.get(sumupPendingKey(userId));
+  if (!raw) return false;
+  let pending;
+  try { pending = JSON.parse(raw); } catch { return false; }
+  if (!pending?.id) return false;
+  const res = await fetch(`https://api.sumup.com/v0.1/checkouts/${encodeURIComponent(pending.id)}`, {headers: {authorization: `Bearer ${apiKey}`,accept: "application/json"}});
+  if (!res.ok) {
+    console.error(JSON.stringify({ sumupGet: res.status, body: await res.text().catch(() => "") }));
+    return false;
+  }
+  const data = await res.json();
+  if (String(data.status || "").toUpperCase() !== "PAID") return false;
+  await env.KV.delete(sumupPendingKey(userId));
+  return true;
 }
 
 function tonMemo(userId) {return `gw${userId}`}
