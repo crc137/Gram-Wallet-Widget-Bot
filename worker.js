@@ -103,7 +103,8 @@ async function onCallback(cq, token, env) {
 
   if (data === CB.donate) {
     await tg(token, "answerCallbackQuery", { callback_query_id: cq.id });
-    await edit(token, chatId, messageId, t(lang, "donateMenu"), [[{ text: t(lang, "btnStars"), callback_data: CB.stars },{ text: t(lang, "btnTon"), callback_data: CB.ton }],[{ text: t(lang, "btnCard"), callback_data: CB.card }],[{ text: t(lang, "btnBack"), callback_data: CB.back }]]);
+    const cardLabel = t(lang, "btnCard");
+    await edit(token, chatId, messageId, t(lang, "donateMenu"), [[{ text: t(lang, "btnStars"), callback_data: CB.stars },{ text: t(lang, "btnTon"), callback_data: CB.ton }],[{ text: cardLabel === "btnCard" ? (lang === "ru" ? "💳 Карта Credit/Debit" : "💳 Credit/Debit Card") : cardLabel, callback_data: CB.card }],[{ text: t(lang, "btnBack"), callback_data: CB.back }]]);
     return;
   }
 
@@ -214,8 +215,8 @@ function sumupPendingKey(userId) {return `sumup:pending:${userId}`}
 
 async function sumupAuth(env) {
   const apiKey = String(env.SUMUP_API_KEY || "").trim();
-  const merchant = String(env.SUMUP_MERCHANT_CODE || config.sumupMerchantCode || "").trim();
-  const email = String(config.sumupPayToEmail || "").trim();
+  const merchant = String(env.SUMUP_MERCHANT_CODE || config.sumupMerchantCode || "MCRLPU2Q").trim();
+  const email = String(config.sumupPayToEmail || "admin@coonlink.com").trim();
   return { apiKey, merchant, email };
 }
 
