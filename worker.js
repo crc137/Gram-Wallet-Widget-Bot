@@ -17,6 +17,10 @@ export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
     if (request.method === "GET" && url.pathname === "/") {return json({ ok: true, service: "gram-wallet-widget-bot" })}
+    if (request.method === "GET" && url.pathname === "/tasks") {
+      const tasks = await loadTasks(env);
+      return json({ ok: true, tasks }, 200, { "cache-control": "public, max-age=60" });
+    }
     if (request.method === "GET" && url.pathname === "/donor") {
       const address = String(url.searchParams.get("address") || "").trim();
       if (!address) return json({ ok: false, donor: false, error: "address required" }, 400);
@@ -485,4 +489,18 @@ async function tg(token, method, body) {
   return res.json();
 }
 
-function json(data, status = 200) {return new Response(JSON.stringify(data), {status,headers: { "content-type": "application/json" }})}
+const DEFAULT_TASKS = [{id: "chat", icon: "group", url: "https://t.me/GramWalletWidgetChat", title: "Join the chat", title_ru: "Вступить в чат", hint: "Community chat · @GramWalletWidgetChat", hint_ru: "Чат сообщества · @GramWalletWidgetChat"},{id: "boost", icon: "channel", url: "https://t.me/boost/GramWalletWidget", title: "Boost the channel", title_ru: "Забустить канал", hint: "Telegram Boost · @GramWalletWidget", hint_ru: "Telegram Boost · @GramWalletWidget"},{id: "channel", icon: "channel", url: "https://t.me/GramWalletWidget", title: "Subscribe to the channel", title_ru: "Подписаться на канал", hint: "News and updates · @GramWalletWidget", hint_ru: "Новости и обновления · @GramWalletWidget"},{id: "gifts", icon: "nfts", url: "https://t.me/GiftChanges", title: "Follow GiftChanges", title_ru: "Подписаться на GiftChanges", hint: "Gift stickers · @GiftChanges", hint_ru: "Стикеры подарков · @GiftChanges"},{id: "coonlink", icon: "channel", url: "https://t.me/coonlink", title: "Follow CoonLink", title_ru: "Подписаться на CoonLink", hint: "Author channel · @coonlink", hint_ru: "Канал автора · @coonlink"},{id: "coondev", icon: "coondev", url: "https://t.me/coondev", title: "Follow CoonDev", title_ru: "Подписаться на CoonDev", hint: "Dev channel · @coondev", hint_ru: "Канал разработки · @coondev"}];
+
+async function loadTasks(env) {
+  try {
+    const raw = env?.KV ? await env.KV.get("tasks:list") : null;
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed) && parsed.length) {return parsed.filter(t => t && t.id && t.url);}
+      if (parsed && Array.isArray(parsed.tasks) && parsed.tasks.length) {return parsed.tasks.filter(t => t && t.id && t.url);}
+    }
+  } catch (err) {console.error(JSON.stringify({ tasksLoad: String(err) }));}
+  return DEFAULT_TASKS;
+}
+
+function json(data, status = 200, extraHeaders = {}) {return new Response(JSON.stringify(data), {status, headers: {"content-type": "application/json", ...extraHeaders}});}
