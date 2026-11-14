@@ -7,10 +7,10 @@
   [![English](https://img.shields.io/badge/lang-English%20🇺🇸-white)](README.md)
   [![Русский](https://img.shields.io/badge/язык-Русский%20🇷🇺-white)](README.ru.md)
 
-  <img alt="last-commit" src="https://img.shields.io/github/last-commit/crc137/Gram-Wallet-Widget-Apk?style=flat&amp;logo=git&amp;logoColor=white&amp;color=0080ff" style="margin: 0px 2px;">
-  <img alt="repo-top-language" src="https://img.shields.io/github/languages/top/crc137/Gram-Wallet-Widget-Apk?style=flat&amp;color=0080ff" style="margin: 0px 2px;">
-  <img alt="repo-language-count" src="https://img.shields.io/github/languages/count/crc137/Gram-Wallet-Widget-Apk?style=flat&amp;color=0080ff" style="margin: 0px 2px;">
-  <img alt="version" src="https://img.shields.io/badge/version-26.1.73-blue" style="margin: 0px 2px;">
+  <img alt="last-commit" src="https://img.shields.io/github/last-commit/crc137/Gram-Wallet-Widget-Bot?style=flat&amp;logo=git&amp;logoColor=white&amp;color=0080ff" style="margin: 0px 2px;">
+  <img alt="repo-top-language" src="https://img.shields.io/github/languages/top/crc137/Gram-Wallet-Widget-Bot?style=flat&amp;color=0080ff" style="margin: 0px 2px;">
+  <img alt="repo-language-count" src="https://img.shields.io/github/languages/count/crc137/Gram-Wallet-Widget-Bot?style=flat&amp;color=0080ff" style="margin: 0px 2px;">
+  <img alt="version" src="https://img.shields.io/badge/version-26.2.x-blue" style="margin: 0px 2px;">
   <!-- img alt="status" src="https://img.shields.io/badge/status-STABLE-green" style="margin: 0px 2px;" -->
 </div>
 
