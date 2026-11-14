@@ -144,10 +144,16 @@ async function onCallback(cq, token, env) {
     const amount = (config.cardAmount / 100).toFixed(2);
     const checkout = await createSumUpCheckout(env, userId, lang);
     if (!checkout?.url) {
-      await edit(token, chatId, messageId, t(lang, "invoiceError"), [[{ text: t(lang, "btnBack"), callback_data: CB.donate }]]);
+      const detail = checkout?.error ? `\n\n(${checkout.error})` : "";
+      await edit(token, chatId, messageId, t(lang, "invoiceError") + detail, [[{ text: t(lang, "btnBack"), callback_data: CB.donate }]]);
       return;
     }
-    await edit(token, chatId, messageId, t(lang, "cardPay"), [[{ text: t(lang, "btnPayCard", { amount, currency: config.cardCurrency }), url: checkout.url }],[{ text: t(lang, "btnCheck"), callback_data: CB.cardCheck }],[{ text: t(lang, "btnBack"), callback_data: CB.donate }]]);
+    const rows = [[{ text: t(lang, "btnPayCard", { amount, currency: config.cardCurrency }), url: checkout.url }],[{ text: t(lang, "btnCheck"), callback_data: CB.cardCheck }],[{ text: t(lang, "btnBack"), callback_data: CB.donate }]];
+    const edited = await edit(token, chatId, messageId, t(lang, "cardPay"), rows);
+    if (!edited?.ok) {
+      console.error(JSON.stringify({ cardEdit: edited }));
+      await tg(token, "sendMessage", {chat_id: chatId,text: t(lang, "cardPay"),reply_markup: { inline_keyboard: rows }});
+    }
     return;
   }
 
@@ -215,27 +221,37 @@ async function sumupAuth(env) {
 
 async function createSumUpCheckout(env, userId, lang) {
   const { apiKey, merchant, email } = await sumupAuth(env);
-  if (!apiKey || (!merchant && !email)) return null;
+  if (!apiKey) return { error: "no_api_key" };
+  if (!merchant && !email) return { error: "no_merchant" };
   const amount = Math.round(config.cardAmount) / 100;
   const checkout_reference = `gw${userId}-${Date.now()}`.slice(0, 64);
   const body = {amount,currency: config.cardCurrency,checkout_reference,description: t(lang, "invoiceDesc"),hosted_checkout: { enabled: true }};
   if (merchant) body.merchant_code = merchant;
   if (email) body.pay_to_email = email;
-  const res = await fetch("https://api.sumup.com/v0.1/checkouts", {method: "POST",headers: {authorization: `Bearer ${apiKey}`,"content-type": "application/json"},body: JSON.stringify(body)});
+  let res;
+  try {res = await fetch("https://api.sumup.com/v0.1/checkouts", {method: "POST",headers: {authorization: `Bearer ${apiKey}`,"content-type": "application/json"},body: JSON.stringify(body)});} catch (err) {
+    console.error(JSON.stringify({ sumupCreate: "fetch", err: String(err) }));
+    return { error: "sumup_fetch" };
+  }
   const text = await res.text().catch(() => "");
   if (!res.ok) {
     console.error(JSON.stringify({ sumupCreate: res.status, body: text }));
-    return null;
+    let msg = `sumup_${res.status}`;
+    try {
+      const err = JSON.parse(text);
+      msg = String(err?.error_code || err?.title || err?.message || msg).slice(0, 80);
+    } catch {}
+    return { error: msg };
   }
   let data = {};
-  try { data = JSON.parse(text); } catch { return null; }
+  try { data = JSON.parse(text); } catch { return { error: "bad_json" }; }
   const url = data.hosted_checkout_url || null;
   const id = data.id || null;
   if (!url || !id) {
     console.error(JSON.stringify({ sumupCreate: "no_url", data }));
-    return null;
+    return { error: "no_checkout_url" };
   }
-  if (env.KV) await env.KV.put(sumupPendingKey(userId), JSON.stringify({ id, ref: checkout_reference }), { expirationTtl: 60 * 60 });
+  try {if (env.KV) await env.KV.put(sumupPendingKey(userId), JSON.stringify({ id, ref: checkout_reference }), { expirationTtl: 60 * 60 });} catch (err) {console.error(JSON.stringify({ sumupKv: String(err) }));}
   return { url, id };
 }
 
