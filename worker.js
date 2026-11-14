@@ -206,21 +206,35 @@ async function createStarsLink(token, chatId, messageId, userId, lang) {
 
 function sumupPendingKey(userId) {return `sumup:pending:${userId}`}
 
-async function createSumUpCheckout(env, userId, lang) {
+async function sumupAuth(env) {
   const apiKey = String(env.SUMUP_API_KEY || "").trim();
   const merchant = String(env.SUMUP_MERCHANT_CODE || config.sumupMerchantCode || "").trim();
-  if (!apiKey || !merchant) return null;
+  const email = String(config.sumupPayToEmail || "").trim();
+  return { apiKey, merchant, email };
+}
+
+async function createSumUpCheckout(env, userId, lang) {
+  const { apiKey, merchant, email } = await sumupAuth(env);
+  if (!apiKey || (!merchant && !email)) return null;
   const amount = Math.round(config.cardAmount) / 100;
   const checkout_reference = `gw${userId}-${Date.now()}`.slice(0, 64);
-  const res = await fetch("https://api.sumup.com/v0.1/checkouts", {method: "POST",headers: {authorization: `Bearer ${apiKey}`,"content-type": "application/json"},body: JSON.stringify({merchant_code: merchant,amount,currency: config.cardCurrency,checkout_reference,description: t(lang, "invoiceDesc"),hosted_checkout: { enabled: true }})});
+  const body = {amount,currency: config.cardCurrency,checkout_reference,description: t(lang, "invoiceDesc"),hosted_checkout: { enabled: true }};
+  if (merchant) body.merchant_code = merchant;
+  if (email) body.pay_to_email = email;
+  const res = await fetch("https://api.sumup.com/v0.1/checkouts", {method: "POST",headers: {authorization: `Bearer ${apiKey}`,"content-type": "application/json"},body: JSON.stringify(body)});
+  const text = await res.text().catch(() => "");
   if (!res.ok) {
-    console.error(JSON.stringify({ sumupCreate: res.status, body: await res.text().catch(() => "") }));
+    console.error(JSON.stringify({ sumupCreate: res.status, body: text }));
     return null;
   }
-  const data = await res.json();
+  let data = {};
+  try { data = JSON.parse(text); } catch { return null; }
   const url = data.hosted_checkout_url || null;
   const id = data.id || null;
-  if (!url || !id) return null;
+  if (!url || !id) {
+    console.error(JSON.stringify({ sumupCreate: "no_url", data }));
+    return null;
+  }
   if (env.KV) await env.KV.put(sumupPendingKey(userId), JSON.stringify({ id, ref: checkout_reference }), { expirationTtl: 60 * 60 });
   return { url, id };
 }
