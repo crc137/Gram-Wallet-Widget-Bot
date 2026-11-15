@@ -902,8 +902,9 @@ function shortAddr(a) {
 
 function midAddr(a) {
   const s = String(a || "");
-  if (s.length < 14) return { head: s, tail: "" };
-  return { head: s.slice(0, -6), tail: s.slice(-6) };}
+  if (s.length < 16) return { head: s, tail: "" };
+  return { head: s.slice(0, 8), tail: s.slice(-6) };
+}
 
 function deviceBrand(model) {
   const m = String(model || "").toLowerCase();
@@ -1042,7 +1043,7 @@ function statsHtml(data, lang = "en") {
     }
     const tone = i === 0 ? "r1" : i === 1 ? "r2" : i === 2 ? "r3" : "rn";
     const fracHtml = parts.frac ? `<span class="frac">.${esc(parts.frac)}</span>` : "";
-    const title = mid.tail? `<span class="title mono" title="${esc(w.address)}"><span class="head">${esc(mid.head)}</span><span class="tail">${esc(mid.tail)}</span></span>`: `<span class="title mono">${esc(mid.head)}</span>`;
+    const title = mid.tail? `<span class="title mono" title="${esc(w.address)}"><span class="head">${esc(mid.head)}</span><span class="dots">…</span><span class="tail">${esc(mid.tail)}</span></span>`: `<span class="title mono">${esc(mid.head)}</span>`;
     return `<a class="row" href="https://gram.org/address/${esc(w.address)}" target="_blank" rel="noopener"><span class="rank ${tone}">${i + 1}</span><span class="who">${title}<span class="share"><span style="width:${pct}%"></span></span></span><span class="amount"><span class="ton"><span class="num">${esc(parts.whole)}${fracHtml}</span><span class="unit"> ${t.gram}</span><img class="coin" src="https://gram.org/assets/gem-blue.v1.webp" alt="" width="16" height="16" decoding="async"/></span>${usd ? `<small class="muted">${esc(usd)}</small>` : ""}</span></a>`;
   }).join("") || `<div class="empty">${esc(t.empty)}</div>`;
 
@@ -1149,9 +1150,8 @@ ul li.empty{padding:14px 16px;color:var(--mute2);font-size:13px}
 .rank.r3{background:linear-gradient(135deg,#f6c9a1,#d08a4f);color:#5c3315}
 .who{display:flex;flex:1;flex-direction:column;gap:3px;min-width:0}
 .title{overflow:hidden;font-weight:600;font-size:15px;text-overflow:ellipsis}
-.title.mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:13px;font-weight:500;display:flex;min-width:0;max-width:100%}
-.title.mono .head{overflow:hidden;text-overflow:clip;white-space:nowrap;min-width:0;flex:1 1 auto;direction:rtl;text-align:left}
-.title.mono .tail{flex:none}
+.title.mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:13px;font-weight:500;display:inline-flex;align-items:baseline;min-width:0;max-width:100%;overflow:hidden}
+.title.mono .head,.title.mono .dots,.title.mono .tail{flex:none}
 .share{height:3px;overflow:hidden;border-radius:2px;background:var(--muted)}
 .share>span{display:block;height:100%;border-radius:2px;background:#08f;opacity:.55}
 .amount{display:flex;flex:none;flex-direction:column;align-items:flex-end;gap:1px}
