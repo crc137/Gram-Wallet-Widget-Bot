@@ -392,7 +392,6 @@ async function donatedFromAddress(address) {
 
 let apkCache = { tag: "", fileId: null };
 let releaseCache = { at: 0, data: null };
-
 const ghHeaders = { accept: "application/vnd.github+json", "user-agent": "gram-wallet-widget-bot" };
 
 async function getLatestRelease() {
@@ -824,9 +823,7 @@ async function loadStats(env) {
   try { recentApp = JSON.parse((env?.KV && await env.KV.get("stat:w:recent")) || "[]") || []; } catch { recentApp = []; }
   if (!Array.isArray(recentApp)) recentApp = [];
   const byAddr = new Map();
-  for (const row of recentApp) {
-    if (row?.a) byAddr.set(row.a, { a: row.a, t: Number(row.t) || 0, h: row.h || "", b: row.b || "0" });
-  }
+  for (const row of recentApp) {if (row?.a) byAddr.set(row.a, { a: row.a, t: Number(row.t) || 0, h: row.h || "", b: row.b || "0" });}
   if (env?.KV) {
     for (const name of await listKvPrefix(env, "stat:w:")) {
       if (name === "stat:w:recent") continue;
@@ -857,24 +854,44 @@ async function loadStats(env) {
       } catch { return 0; }
     });
   }
-  return {
-    downloadsTotal, wallets, opens, versions, devices,
-    deviceModels: devices.length,
-    recentApp: recentApp.slice(0, 20),
-    hotApp,
-    updatedAt: new Date().toISOString()
+  const usdRate = await fetchGramUsd(env);
+  return {downloadsTotal, wallets, opens, versions, devices,deviceModels: devices.length,recentApp: recentApp.slice(0, 20),hotApp,usdRate,updatedAt: new Date().toISOString()};
+}
+
+async function fetchGramUsd(env) {
+  let cached = 0;
+  try { cached = Number(await env.KV.get("stat:gram_usd")) || 0; } catch {}
+  const tryParse = async (url, pick) => {
+    try {
+      const rr = await fetch(url, { headers: { accept: "application/json" } });
+      if (!rr.ok) return 0;
+      return Number(pick(await rr.json())) || 0;
+    } catch { return 0; }
   };
+  let rate = await tryParse("https://api.coinbase.com/v2/prices/TON-USD/spot", j => j?.data?.amount);
+  if (!(rate > 0)) rate = await tryParse("https://api.coingecko.com/api/v3/simple/price?ids=the-open-network&vs_currencies=usd", j => j?.["the-open-network"]?.usd);
+  if (!(rate > 0)) rate = await tryParse("https://tonapi.io/v2/rates?tokens=gram&currencies=usd", j => j?.rates?.GRAM?.prices?.USD);
+  if (rate > 0) {
+    try { await env.KV.put("stat:gram_usd", String(rate), { expirationTtl: 3600 }); } catch {}
+    return rate;
+  }
+  return cached;
 }
 
 function nanoToGram(nano) {
+  const p = nanoToGramParts(nano);
+  return p.frac ? `${p.whole}.${p.frac}` : p.whole;
+}
+
+function nanoToGramParts(nano) {
   try {
     const n = BigInt(String(nano || "0"));
     const whole = n / 1000000000n;
     const frac = n % 1000000000n;
     const f = frac.toString().padStart(9, "0").replace(/0+$/, "").slice(0, 2);
     const w = whole.toString().replace(/\B(?=(\d{3})+(?!\d))/g, ",");
-    return f ? `${w}.${f}` : w;
-  } catch { return "0"; }
+    return { whole: w, frac: f };
+  } catch { return { whole: "0", frac: "" }; }
 }
 
 function shortAddr(a) {
@@ -883,80 +900,321 @@ function shortAddr(a) {
   return `${s.slice(0, 6)}…${s.slice(-4)}`;
 }
 
+function midAddr(a) {
+  const s = String(a || "");
+  if (s.length < 14) return { head: s, tail: "" };
+  return { head: s.slice(0, -6), tail: s.slice(-6) };}
+
+function deviceBrand(model) {
+  const m = String(model || "").toLowerCase();
+  if (m.includes("xiaomi") || m.includes("redmi") || m.includes("poco")) return "xiaomi";
+  if (m.includes("samsung") || m.startsWith("sm-") || m.includes("galaxy")) return "samsung";
+  if (m.includes("google") || m.includes("pixel")) return "google";
+  if (m.includes("honor")) return "honor";
+  if (m.includes("huawei")) return "huawei";
+  if (m.includes("oneplus")) return "oneplus";
+  if (m.includes("oppo")) return "oppo";
+  if (m.includes("vivo") || m.includes("iqoo")) return "vivo";
+  if (m.includes("realme")) return "realme";
+  if (m.includes("motorola") || m.includes("moto ")) return "motorola";
+  if (m.includes("nothing")) return "nothing";
+  if (m.includes("sony") || m.includes("xperia")) return "sony";
+  if (m.includes("asus")) return "asus";
+  if (m.includes("nokia")) return "nokia";
+  if (m.includes("tecno") || m.includes("infinix")) return "tecno";
+  if (m.includes("apple") || m.includes("iphone")) return "apple";
+  if (m.includes("meizu")) return "meizu";
+  if (m.includes("lenovo")) return "lenovo";
+  return "phone";
+}
+
+function brandMeta(brand) {
+  const map = {
+    xiaomi: { bg: "#FF6900", icon: "xiaomi", color: "white" },
+    samsung: { bg: "#1428A0", icon: "samsung", color: "white" },
+    google: { bg: "#F1F3F4", icon: "google", color: "4285F4" },
+    huawei: { bg: "#CF0A2C", icon: "huawei", color: "white" },
+    honor: { bg: "#111111", icon: "honor", color: "white" },
+    oneplus: { bg: "#F50537", icon: "oneplus", color: "white" },
+    oppo: { bg: "#000000", icon: "oppo", color: "white" },
+    vivo: { bg: "#415FFF", icon: "vivo", color: "white" },
+    realme: { bg: "#FFC915", icon: "realme", color: "111111" },
+    motorola: { bg: "#111111", icon: "motorola", color: "white" },
+    nothing: { bg: "#111111", icon: "nothing", color: "white" },
+    sony: { bg: "#111111", icon: "sony", color: "white" },
+    asus: { bg: "#111111", icon: "asus", color: "white" },
+    nokia: { bg: "#124191", icon: "nokia", color: "white" },
+    apple: { bg: "#F4F4F5", icon: "apple", color: "111111" },
+    lenovo: { bg: "#E2231A", icon: "lenovo", color: "white" },
+    tecno: { bg: "#015AFF", icon: "tecno", color: "white" },
+    meizu: { bg: "#111111", icon: "meizu", color: "white" },
+    phone: { bg: "#F4F4F5", icon: "", color: "71717A" }
+  };
+  return map[brand] || map.phone;
+}
+
+function brandLogo(brand) {
+  const meta = brandMeta(brand);
+  if (brand === "xiaomi") {return `<svg width="32" height="32" viewBox="0 0 24 24" aria-hidden="true"><path fill="#FF6900" d="M12 0C8.016 0 4.756.255 2.493 2.516.23 4.776 0 8.033 0 12.012c0 3.98.23 7.235 2.494 9.497C4.757 23.77 8.017 24 12 24c3.983 0 7.243-.23 9.506-2.491C23.77 19.247 24 15.99 24 12.012c0-3.984-.233-7.243-2.502-9.504C19.234.252 15.978 0 12 0zM4.906 7.405h5.624c1.47 0 3.007.068 3.764.827.746.746.827 2.233.83 3.676v4.54a.15.15 0 0 1-.152.147h-1.947a.15.15 0 0 1-.152-.148V11.83c-.002-.806-.048-1.634-.464-2.051-.358-.36-1.026-.441-1.72-.458H7.158a.15.15 0 0 0-.151.147v6.98a.15.15 0 0 1-.152.148H4.906a.15.15 0 0 1-.15-.148V7.554a.15.15 0 0 1 .15-.149zm12.131 0h1.949a.15.15 0 0 1 .15.15v8.892a.15.15 0 0 1-.15.148h-1.949a.15.15 0 0 1-.151-.148V7.554a.15.15 0 0 1 .151-.149zM8.92 10.948h2.046c.083 0 .15.066.15.147v5.352a.15.15 0 0 1-.15.148H8.92a.15.15 0 0 1-.152-.148v-5.352a.15.15 0 0 1 .152-.147Z"/></svg>`;}
+  if (!meta.icon) {return `<svg width="18" height="18" viewBox="0 0 24 24" aria-hidden="true"><rect x="7" y="3" width="10" height="18" rx="2" fill="none" stroke="#a1a1aa" stroke-width="1.6"/><circle cx="12" cy="17.5" r=".9" fill="#a1a1aa"/></svg>`;}
+  const src = `https://cdn.simpleicons.org/${meta.icon}/${meta.color}`;
+  return `<img class="brand" src="${src}" width="18" height="18" alt="" loading="lazy"/>`;
+}
+
+function gramMark() {return `<svg width="12" height="12" viewBox="0 0 24 24" aria-hidden="true"><path fill="#0098EA" d="M12 2.2 20.2 7v10L12 21.8 3.8 17V7L12 2.2Zm0 2.9L6.6 8.2v7.6L12 19l5.4-3.2V8.2L12 5.1Z"/></svg>`;}
+function rankTone(i) { return i === 0 ? "r1" : i === 1 ? "r2" : i === 2 ? "r3" : "rn"; }
+function prettyDevice(model) {return String(model || "").trim().replace(/^xiaomi\s+/i, "Xiaomi ").replace(/^samsung\s+/i, "Samsung ").replace(/^google\s+/i, "Google ");}
+
 function statsHtml(data, lang = "en") {
   const ru = lang === "ru";
   const t = ru ? {
-    title: "Gram Wallet · Дашборд",
-    sub: "Только данные нашего приложения",
-    dl: "Скачивания", wallets: "Кошельки", opens: "Открытия", devices: "Модели",
-    ver: "Релизы / новости", phone: "Телефоны", people: "открытий с модели",
-    hot: "Крупнейшие балансы в приложении", appNew: "Новые кошельки в приложении",
-    gram: "GRAM", empty: "Пока пусто",
-    note: "Собираем адреса, добавленные в Gram Wallet, модели устройств, открытия и скачивания релизов.",
+    title: "Gram Wallet",
+    sub: "Статистика приложения",
+    hero: "Обзор",
+    heroHint: "Скачивания, открытия и кошельки внутри приложения",
+    live: "live",
+    dl: "Скачивания", wallets: "Кошельки", opens: "Открытия", models: "Модели",
+    doneOf: "скачиваний релизов",
+    releases: "Релизы", phones: "Телефоны", devices: "устройств",
+    hot: "Крупнейшие балансы", neu: "Новые кошельки",
+    gram: "GRAM", empty: "Пока пусто", opensShort: "открытий",
     other: "EN", otherHref: "/stats"
   } : {
-    title: "Gram Wallet · Dashboard",
-    sub: "Our app data only",
-    dl: "Downloads", wallets: "Wallets", opens: "Opens", devices: "Models",
-    ver: "Releases / news", phone: "Phones", people: "opens on model",
-    hot: "Largest balances in app", appNew: "New wallets in app",
-    gram: "GRAM", empty: "Nothing yet",
-    note: "We collect wallets added in Gram Wallet, device models, opens, and release downloads.",
+    title: "Gram Wallet",
+    sub: "App analytics",
+    hero: "Overview",
+    heroHint: "Downloads, opens and wallets inside the app",
+    live: "live",
+    dl: "Downloads", wallets: "Wallets", opens: "Opens", models: "Models",
+    doneOf: "release downloads",
+    releases: "Releases", phones: "Phones", devices: "devices",
+    hot: "Largest balances", neu: "New wallets",
+    gram: "GRAM", empty: "Nothing yet", opensShort: "opens",
     other: "RU", otherHref: "/ru/stats"
   };
-  const verRows = (data.versions || []).map(v => `<div class="row"><span>${esc(v.tag)}</span><b>${Number(v.count)||0}</b></div>`).join("") || `<div class="empty">${esc(t.empty)}</div>`;
+
+  const downloads = Number(data.downloadsTotal) || 0;
+  const wallets = Number(data.wallets) || 0;
+  const opens = Number(data.opens) || 0;
+  const models = Number(data.deviceModels) || 0;
+  const versions = data.versions || [];
+  const verTotal = versions.reduce((s, v) => s + (Number(v.count) || 0), 0) || 1;
   const deviceTotal = (data.devices || []).reduce((s, d) => s + (Number(d.count) || 0), 0) || 0;
-  const deviceRows = (data.devices || []).slice(0, 16).map((d) => {
-    const pct = deviceTotal ? Math.round((Number(d.count) || 0) * 100 / deviceTotal) : 0;
-    return `<div class="person"><div class="av">${esc(String(d.model||"?").slice(0,2).toUpperCase())}</div><div class="meta"><strong>${esc(d.model)}</strong><span>${Number(d.count)||0} · ${pct}%</span></div><div class="bar"><i style="width:${pct}%"></i></div></div>`;
+  const maxDevice = Math.max(1, ...(data.devices || []).map(d => Number(d.count) || 0));
+  const usdRate = Number(data.usdRate) || 0;
+  const progress = Math.min(100, downloads ? Math.max(8, Math.min(92, downloads * 8)) : 6);
+
+  const releaseSeg = versions.slice(0, 5).map((v, i) => {
+    const c = Number(v.count) || 0;
+    const grow = c / verTotal;
+    const colors = ["var(--fg)", "var(--fg-35)", "var(--fg-15)", "#08f", "var(--mute)"];
+    return `<span style="flex-grow:${grow};background:${colors[i % colors.length]}"></span>`;
+  }).join("") || `<span style="flex-grow:1;background:var(--fg-15)"></span>`;
+
+  const releaseRows = versions.map(v => {
+    const c = Number(v.count) || 0;
+    const pct = Math.round(c * 100 / verTotal);
+    return `<li><span class="name">${esc(v.tag)}</span><span class="n">${c}</span><span class="p">${pct}%</span></li>`;
+  }).join("") || `<li class="empty">${esc(t.empty)}</li>`;
+
+  const phoneRows = (data.devices || []).slice(0, 12).map(d => {
+    const c = Number(d.count) || 0;
+    const brand = deviceBrand(d.model);
+    const meta = brandMeta(brand);
+    const pct = Math.round(c * 100 / maxDevice);
+    const avStyle = brand === "xiaomi" ? "background:transparent;padding:0" : `background:${meta.bg}`;
+    return `<li><button type="button"><span class="av" style="${avStyle}">${brandLogo(brand)}</span><div class="who"><div class="line"><span class="nm">${esc(prettyDevice(d.model))}</span><span class="cnt"><b>${c}</b> ${esc(t.opensShort)}</span></div><div class="bar"><i style="width:${Math.max(pct,6)}%"></i></div></div></button></li>`;
+  }).join("") || `<li class="empty">${esc(t.empty)}</li>`;
+
+  const maxBal = (data.hotApp || []).reduce((m, w) => {try { const n = BigInt(w.balance || "0"); return n > m ? n : m; } catch { return m; }}, 0n);
+
+  const hotRows = (data.hotApp || []).filter(w => { try { return BigInt(w.balance || "0") > 0n; } catch { return false; } }).slice(0, 10).map((w, i) => {
+    let pct = 0;
+    try { if (maxBal > 0n) pct = Number((BigInt(w.balance || "0") * 10000n) / maxBal) / 100; } catch {}
+    const parts = nanoToGramParts(w.balance);
+    const mid = midAddr(w.address);
+    let usd = "";
+    if (usdRate > 0) {
+      try {
+        const v = ((Number(BigInt(w.balance || "0")) / 1e9) * usdRate);
+        usd = `≈ ${v.toLocaleString(ru ? "ru-RU" : "en-US", { maximumFractionDigits: 2, minimumFractionDigits: 2 })} $`;
+      } catch {}
+    }
+    const tone = i === 0 ? "r1" : i === 1 ? "r2" : i === 2 ? "r3" : "rn";
+    const fracHtml = parts.frac ? `<span class="frac">.${esc(parts.frac)}</span>` : "";
+    const title = mid.tail? `<span class="title mono" title="${esc(w.address)}"><span class="head">${esc(mid.head)}</span><span class="tail">${esc(mid.tail)}</span></span>`: `<span class="title mono">${esc(mid.head)}</span>`;
+    return `<a class="row" href="https://tonviewer.com/${esc(w.address)}" target="_blank" rel="noopener"><span class="rank ${tone}">${i + 1}</span><span class="who">${title}<span class="share"><span style="width:${pct}%"></span></span></span><span class="amount"><span class="ton"><span class="num">${esc(parts.whole)}${fracHtml}</span><span class="unit"> ${t.gram}</span><img class="coin" src="https://gram.org/assets/gem-blue.v1.webp" alt="" width="16" height="16" decoding="async"/></span>${usd ? `<small class="muted">${esc(usd)}</small>` : ""}</span></a>`;
   }).join("") || `<div class="empty">${esc(t.empty)}</div>`;
-  const hotRows = (data.hotApp || []).slice(0, 12).map((w, i) => `<div class="item"><span class="rank">#${i+1}</span><code>${esc(shortAddr(w.address))}</code><b>${esc(nanoToGram(w.balance))} ${t.gram}</b></div>`).join("") || `<div class="empty">${esc(t.empty)}</div>`;
-  const appNewRows = (data.recentApp || []).slice(0, 16).map(w => {
+
+  const newRows = (data.recentApp || []).slice(0, 10).map(w => {
     const when = w.t ? new Date(Number(w.t)).toISOString().replace("T", " ").slice(0, 16) : "";
-    return `<div class="item"><code>${esc(shortAddr(w.a))}</code><span class="muted">${esc(when)}</span></div>`;
-  }).join("") || `<div class="empty">${esc(t.empty)}</div>`;
-  return `<!doctype html><html lang="${ru?"ru":"en"}"><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/><title>${esc(t.title)}</title><style>
-:root{--bg:#f4f5f7;--card:#fff;--ink:#111827;--muted:#6b7280;--line:#e5e7eb;--accent:#0b6fd4;--soft:#eef6ff}
-*{box-sizing:border-box}body{margin:0;font-family:ui-sans-serif,system-ui,-apple-system,sans-serif;background:var(--bg);color:var(--ink)}
-main{max-width:1100px;margin:0 auto;padding:24px 16px 56px}
-.top{display:flex;justify-content:space-between;gap:12px;align-items:flex-start;margin-bottom:8px}
-h1{margin:0;font-size:28px;letter-spacing:-.02em}.sub{margin:6px 0 18px;color:var(--muted)}
-.lang a{display:inline-block;text-decoration:none;color:var(--ink);border:1px solid var(--line);background:var(--card);border-radius:999px;padding:7px 12px;font-size:12px;font-weight:700}
-.kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin-bottom:16px}
-.kpi,.panel{background:var(--card);border:1px solid var(--line);border-radius:16px;box-shadow:0 1px 0 rgba(17,24,39,.03)}
-.kpi{padding:16px}.kpi span{display:block;color:var(--muted);font-size:12px;font-weight:600;letter-spacing:.04em;text-transform:uppercase}
-.kpi b{display:block;margin-top:8px;font-size:28px;letter-spacing:-.03em}.kpi em{display:block;margin-top:4px;font-style:normal;color:var(--muted);font-size:12px}
-.grid{display:grid;grid-template-columns:1.1fr .9fr;gap:12px;margin-bottom:12px}
-@media(max-width:860px){.grid{grid-template-columns:1fr}}
-.panel{padding:16px}.panel h2{margin:0 0 12px;font-size:15px;letter-spacing:.02em}
-.row,.item{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:10px 0;border-bottom:1px solid var(--line)}
-.row:last-child,.item:last-child,.person:last-child{border-bottom:0}
-code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px}
-.rank{width:28px;color:var(--muted);font-size:12px;font-weight:700}
-.muted{color:var(--muted);font-size:12px}.empty{color:var(--muted);padding:8px 0}
-.person{display:grid;grid-template-columns:36px 1fr;gap:8px 10px;align-items:center;padding:10px 0;border-bottom:1px solid var(--line)}
-.av{width:36px;height:36px;border-radius:10px;background:var(--soft);color:var(--accent);display:grid;place-items:center;font-size:11px;font-weight:800}
-.meta{display:flex;flex-direction:column;gap:2px;min-width:0}.meta strong{font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.meta span{color:var(--muted);font-size:12px}
-.bar{grid-column:2;height:6px;background:#f3f4f6;border-radius:999px;overflow:hidden}.bar i{display:block;height:100%;background:var(--accent)}
-.note{margin-top:14px;color:var(--muted);font-size:13px;line-height:1.45}
-</style></head><body><main>
-<div class="top"><div><h1>GRAM WALLET</h1><p class="sub">${esc(t.sub)}</p></div><div class="lang"><a href="${t.otherHref}">${t.other}</a></div></div>
-<div class="kpis">
-<div class="kpi"><span>${esc(t.dl)}</span><b>${Number(data.downloadsTotal)||0}</b></div>
-<div class="kpi"><span>${esc(t.wallets)}</span><b>${Number(data.wallets)||0}</b></div>
-<div class="kpi"><span>${esc(t.opens)}</span><b>${Number(data.opens)||0}</b></div>
-<div class="kpi"><span>${esc(t.devices)}</span><b>${Number(data.deviceModels)||0}</b><em>${deviceTotal} ${esc(t.people)}</em></div>
-</div>
-<div class="grid">
-<section class="panel"><h2>${esc(t.phone)}</h2>${deviceRows}</section>
-<section class="panel"><h2>${esc(t.ver)}</h2>${verRows}</section>
-</div>
-<div class="grid">
-<section class="panel"><h2>${esc(t.hot)}</h2>${hotRows}</section>
-<section class="panel"><h2>${esc(t.appNew)}</h2>${appNewRows}</section>
-</div>
-<p class="note">${esc(t.note)}</p>
-</main></body></html>`;
+    return `<li class="act"><span class="rail"></span><span class="pill">${esc(shortAddr(w.a).slice(0, 2).toUpperCase())}</span><div><p><b>${esc(shortAddr(w.a))}</b></p><p class="when">${esc(when)}</p></div></li>`;
+  }).join("") || `<li class="empty">${esc(t.empty)}</li>`;
+
+  return `<!doctype html>
+<html lang="${ru ? "ru" : "en"}" class="dark">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"/>
+<meta name="theme-color" content="#0a0a0a"/>
+<title>${esc(t.title)}</title>
+<style>
+@import url("https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600&display=swap");
+:root{
+  --page:#0a0a0a;--bg:#0a0a0a;--muted:#171717;--shell:rgba(23,23,23,.6);
+  --fg:#ededed;--fg-15:rgba(237,237,237,.15);--fg-35:rgba(237,237,237,.35);--fg-07:rgba(237,237,237,.07);
+  --mute:#a3a3a3;--mute2:#737373;--border:#262626;--sky:#08f;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--page);color:var(--fg);font:14px/1.45 Geist,ui-sans-serif,system-ui,-apple-system,sans-serif;-webkit-font-smoothing:antialiased}
+main{max-width:1200px;margin:0 auto;padding:16px 16px 64px;display:flex;flex-direction:column;gap:16px}
+@media(min-width:640px){main{padding:32px 32px 80px;gap:20px}}
+.top{display:flex;flex-wrap:wrap;align-items:flex-end;justify-content:space-between;gap:16px 24px;margin-bottom:2px}
+h1{margin:0;font-size:24px;font-weight:600;letter-spacing:-.025em}
+.sub{margin:4px 0 0;color:var(--mute);font-size:14px;font-weight:400}
+a.lang{display:inline-flex;align-items:center;height:32px;padding:0 12px;border-radius:10px;background:var(--fg);color:var(--bg);text-decoration:none;font-size:13px;font-weight:500}
+.shell{background:var(--shell);border-radius:24px;padding:6px;display:flex;flex-direction:column;min-width:0;height:100%}
+.shell>header{min-height:44px;display:flex;align-items:center;justify-content:space-between;gap:12px;padding:0 4px 0 12px}
+.shell>header h2{margin:0;font-size:14px;font-weight:500}
+.shell>header .meta{color:var(--mute);font-size:13px;font-variant-numeric:tabular-nums}
+.badge{display:inline-flex;align-items:center;gap:6px;height:24px;padding:0 10px;border-radius:999px;background:var(--bg);font-size:12px;font-weight:500;margin-right:4px}
+.badge i{width:6px;height:6px;border-radius:99px;background:var(--mute);display:inline-block}
+.panel{background:var(--bg);border-radius:18px;overflow:hidden;min-width:0;flex:1}
+.hero-grid{display:grid;gap:20px;padding:16px}
+@media(min-width:900px){.hero-grid{grid-template-columns:minmax(0,1fr) 400px;align-items:center;gap:40px;padding:20px}}
+.hero-copy{color:var(--fg);font-size:14px;margin:0;max-width:42ch}
+.hero-metrics{margin-top:16px;display:flex;align-items:baseline;justify-content:space-between;gap:12px}
+.hero-metrics b{font-size:24px;font-weight:600;letter-spacing:-.025em;font-variant-numeric:tabular-nums}
+.hero-metrics span{font-size:13px;color:var(--mute);font-variant-numeric:tabular-nums}
+.progress{margin-top:10px;height:6px;width:100%;overflow:hidden;border-radius:999px;background:var(--fg-07)}
+.progress>i{display:block;height:100%;border-radius:999px;background:var(--fg)}
+.tiles{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:6px}
+.tile{min-width:0;border-radius:12px;background:var(--muted);padding:10px 12px}
+.tile dt{margin:0;color:var(--mute);font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.tile dd{margin:2px 0 0;font-size:15px;font-weight:500;font-variant-numeric:tabular-nums}
+.grid2{display:grid;gap:16px}
+@media(min-width:900px){.grid2{grid-template-columns:minmax(0,1.5fr) minmax(0,1fr);gap:20px}}
+.seg{display:flex;height:8px;width:100%;gap:3px;overflow:hidden;border-radius:999px;padding:16px;box-sizing:content-box}
+.seg>span{height:100%;border-radius:999px;min-width:4px;flex-basis:0}
+ul{list-style:none;margin:0;padding:0}
+ul li.empty{padding:14px 16px;color:var(--mute2);font-size:13px}
+.releases li{display:flex;align-items:center;gap:10px;padding:14px 16px}
+.releases .dot{width:14px;height:14px;border-radius:99px;border:1.5px solid var(--mute);flex:none}
+.releases .dot.done{background:var(--fg);border:0;box-shadow:none;position:relative}
+.releases .dot.done:after{content:"";position:absolute;inset:3.5px;border-radius:99px;background:var(--bg)}
+.releases .name{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px}
+.releases .n{font-size:13px;font-weight:500;font-variant-numeric:tabular-nums}
+.releases .p{width:40px;text-align:right;font-size:12px;color:var(--mute);font-variant-numeric:tabular-nums}
+.phones button{width:100%;display:flex;align-items:center;gap:12px;padding:10px 16px;border:0;background:transparent;color:inherit;text-align:left;cursor:default;font:inherit}
+.phones button:hover{background:rgba(23,23,23,.5)}
+.av{width:28px;height:28px;border-radius:999px;display:grid;place-items:center;overflow:hidden;flex:none;background:var(--muted)}
+.av img,.av svg{display:block}
+.av img{width:14px;height:14px}
+.av svg{width:28px;height:28px}
+.who{min-width:0;flex:1}
+.who .line{display:flex;align-items:baseline;justify-content:space-between;gap:12px}
+.who .nm{font-size:13px;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.who .cnt{font-size:12px;color:var(--mute);font-variant-numeric:tabular-nums;flex:none}
+.who .cnt b{color:var(--fg);font-weight:500}
+.bar{margin-top:6px;height:4px;width:100%;overflow:hidden;border-radius:999px;background:var(--fg-07)}
+.bar>i{display:block;height:100%;border-radius:999px;background:var(--fg)}
+.list-card{overflow:hidden}
+.list-card .row{position:relative;display:flex;align-items:center;gap:12px;min-height:60px;padding:9px 16px;color:var(--fg);text-decoration:none;white-space:nowrap;transition:background .15s}
+.list-card .row:hover{background:rgba(23,23,23,.55)}
+.list-card .row+.row:before{content:"";position:absolute;top:0;left:68px;right:0;border-top:1px solid var(--border)}
+.rank{display:grid;flex:none;place-items:center;width:32px;height:32px;margin:0 4px;border-radius:50%;background:var(--muted);color:var(--mute);font-size:14px;font-weight:600;font-variant-numeric:tabular-nums}
+.rank.r1{background:linear-gradient(135deg,#ffe08a,#f5b400);color:#6b4a00}
+.rank.r2{background:linear-gradient(135deg,#eef1f5,#b9c1cc);color:#4a5361}
+.rank.r3{background:linear-gradient(135deg,#f6c9a1,#d08a4f);color:#5c3315}
+.who{display:flex;flex:1;flex-direction:column;gap:3px;min-width:0}
+.title{overflow:hidden;font-weight:600;font-size:15px;text-overflow:ellipsis}
+.title.mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:13px;font-weight:500;display:flex;min-width:0;max-width:100%}
+.title.mono .head{overflow:hidden;text-overflow:clip;white-space:nowrap;min-width:0;flex:1 1 auto;direction:rtl;text-align:left}
+.title.mono .tail{flex:none}
+.share{height:3px;overflow:hidden;border-radius:2px;background:var(--muted)}
+.share>span{display:block;height:100%;border-radius:2px;background:#08f;opacity:.55}
+.amount{display:flex;flex:none;flex-direction:column;align-items:flex-end;gap:1px}
+.amount .ton{display:inline-flex;align-items:center;gap:4px;font-size:15px;font-weight:600;font-variant-numeric:tabular-nums}
+.amount .num{font-variant-numeric:tabular-nums}
+.amount .frac{font-weight:600;opacity:.72}
+.amount .unit{color:var(--mute);font-weight:500;font-size:13px}
+.amount .coin{display:block;width:16px;height:16px;flex:none}
+.amount .muted{font-size:12px;color:var(--mute2)}
+.list-card .empty{padding:14px 16px;color:var(--mute2);font-size:13px}
+.act{position:relative;display:flex;gap:12px;padding:0 16px 16px}
+.act:first-child{padding-top:14px}
+.act .rail{position:absolute;left:27px;top:28px;bottom:0;width:1px;background:var(--border)}
+.act:last-child .rail{display:none}
+.act .pill{width:24px;height:24px;border-radius:999px;background:var(--muted);color:var(--mute);display:grid;place-items:center;font-size:9px;font-weight:600;flex:none;position:relative;z-index:1}
+.act p{margin:0;font-size:13px;color:var(--mute);line-height:1.35}
+.act b{color:var(--fg);font-weight:500}
+.act .when{margin-top:2px;font-size:12px;color:var(--mute2);font-variant-numeric:tabular-nums}
+</style>
+</head>
+<body>
+<main>
+  <div class="top">
+    <div><h1>${esc(t.title)}</h1><p class="sub">${esc(t.sub)}</p></div>
+    <a class="lang" href="${t.otherHref}">${t.other}</a>
+  </div>
+
+  <section class="shell">
+    <header>
+      <div style="display:flex;align-items:baseline;gap:8px;min-width:0">
+        <h2>${esc(t.hero)}</h2>
+        <span class="meta">${esc(t.dl)}</span>
+      </div>
+      <span class="badge"><i></i>${esc(t.live)}</span>
+    </header>
+    <div class="panel">
+      <div class="hero-grid">
+        <div>
+          <p class="hero-copy">${esc(t.heroHint)}</p>
+          <div class="hero-metrics"><b>${downloads}</b><span>${esc(t.doneOf)}</span></div>
+          <div class="progress"><i style="width:${progress}%"></i></div>
+        </div>
+        <dl class="tiles">
+          <div class="tile"><dt>${esc(t.wallets)}</dt><dd>${wallets}</dd></div>
+          <div class="tile"><dt>${esc(t.opens)}</dt><dd>${opens}</dd></div>
+          <div class="tile"><dt>${esc(t.models)}</dt><dd>${models}</dd></div>
+        </dl>
+      </div>
+    </div>
+  </section>
+
+  <div class="grid2">
+    <section class="shell">
+      <header>
+        <div style="display:flex;align-items:baseline;gap:8px"><h2>${esc(t.releases)}</h2><span class="meta">${versions.length}</span></div>
+      </header>
+      <div class="panel">
+        <ul class="releases">${releaseRows}</ul>
+      </div>
+    </section>
+
+    <section class="shell">
+      <header>
+        <div style="display:flex;align-items:baseline;gap:8px"><h2>${esc(t.phones)}</h2><span class="meta">${deviceTotal} ${esc(t.devices)}</span></div>
+      </header>
+      <div class="panel">
+        <ul class="phones">${phoneRows}</ul>
+      </div>
+    </section>
+  </div>
+
+  <div class="grid2">
+    <section class="shell">
+      <header><div style="display:flex;align-items:baseline;gap:8px"><h2>${esc(t.hot)}</h2></div></header>
+      <div class="panel"><div class="list-card">${hotRows}</div></div>
+    </section>
+    <section class="shell">
+      <header><div style="display:flex;align-items:baseline;gap:8px"><h2>${esc(t.neu)}</h2><span class="meta">${(data.recentApp||[]).length}</span></div></header>
+      <div class="panel"><ul>${newRows}</ul></div>
+    </section>
+  </div>
+</main>
+</body>
+</html>`;
 }
 
 function esc(s) {return String(s || "").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");}
