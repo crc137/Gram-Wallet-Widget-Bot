@@ -17,13 +17,26 @@ export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
     if (request.method === "GET" && url.pathname === "/") {return json({ ok: true, service: "gram-wallet-widget-bot" })}
+    if (request.method === "GET" && (url.pathname === "/stats" || url.pathname === "/ru/stats" || url.pathname === "/en/stats")) {
+      const data = await loadStats(env);
+      const lang = url.pathname.startsWith("/ru/") ? "ru" : "en";
+      const accept = String(request.headers.get("accept") || "");
+      if (url.searchParams.get("format") === "json" || accept.includes("application/json")) {return json({ ok: true, lang, ...data }, 200, { "cache-control": "no-store" });}
+      return new Response(statsHtml(data, lang), { status: 200, headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" } });
+    }
+    if (request.method === "POST" && url.pathname === "/stats/wallet") {
+      let body;
+      try { body = await request.json(); } catch { return json({ ok: false, error: "bad json" }, 400); }
+      const out = await trackWalletHash(env, body?.hash);
+      return json(out, out.ok ? 200 : 400);
+    }
+    if (request.method === "POST" && url.pathname === "/stats/open") {
+      await incrStat(env, "stat:opens");
+      return json({ ok: true });
+    }
     if (request.method === "GET" && url.pathname === "/tasks") {
       const tasks = await loadTasks(env);
       return json({ ok: true, tasks }, 200, { "cache-control": "public, max-age=60" });
-    }
-    if (request.method === "GET" && url.pathname === "/ads") {
-      const ads = await loadAds(env);
-      return json({ ok: true, ads }, 200, { "cache-control": "public, max-age=60" });
     }
     if (request.method === "GET" && url.pathname === "/donor") {
       const address = String(url.searchParams.get("address") || "").trim();
@@ -510,6 +523,7 @@ async function deliverApk(token, chatId, messageId, caption, lang, env) {
   const fileId = sent?.result?.document?.file_id;
   if (fileId) rememberApkFileId(apk.tag, fileId);
   if (!sent?.ok) return;
+  if (env) await trackDownload(env, apk.tag || rel?.tag_name || "");
   if (env && rel?.tag_name) await markGot(env, chatId, rel.tag_name);
   await sendDoneText(token, chatId, messageId, doneText, html);
 }
@@ -615,6 +629,7 @@ async function checkNewRelease(env) {
       const sent = await sendApkDocument(env.BOT_TOKEN, chatId, apk, fileId);
       if (sent?.ok) {
         ok += 1;
+        await trackDownload(env, rel.tag_name);
         await markGot(env, chatId, rel.tag_name);
         if (sent.result?.document?.file_id) fileId = sent.result.document.file_id;
       } else {fail += 1;}
@@ -641,7 +656,7 @@ async function tg(token, method, body) {
   return res.json();
 }
 
-const DEFAULT_TASKS = [{id: "chat", icon: "group", url: "https://t.me/GramWalletWidgetChat", title: "Join the chat", title_ru: "Вступить в чат", hint: "Community chat · @GramWalletWidgetChat", hint_ru: "Чат сообщества · @GramWalletWidgetChat"},{id: "boost", icon: "channel", url: "https://t.me/boost/GramWalletWidget", title: "Boost the channel", title_ru: "Забустить канал", hint: "Telegram Boost · @GramWalletWidget", hint_ru: "Telegram Boost · @GramWalletWidget"},{id: "channel", icon: "channel", url: "https://t.me/GramWalletWidget", title: "Subscribe to the channel", title_ru: "Подписаться на канал", hint: "News and updates · @GramWalletWidget", hint_ru: "Новости и обновления · @GramWalletWidget"},{id: "gifts", icon: "nfts", url: "https://t.me/GiftChanges", title: "Follow GiftChanges", title_ru: "Подписаться на GiftChanges", hint: "Gift stickers · @GiftChanges", hint_ru: "Стикеры подарков · @GiftChanges"},{id: "coonlink", icon: "channel", url: "https://t.me/coonlink", title: "Follow CoonLink", title_ru: "Подписаться на CoonLink", hint: "Author channel · @coonlink", hint_ru: "Канал автора · @coonlink"},{id: "coondev", icon: "coondev", url: "https://t.me/coondev", title: "Follow CoonDev", title_ru: "Подписаться на CoonDev", hint: "Dev channel · @coondev", hint_ru: "Канал разработки · @coondev"}];
+const DEFAULT_TASKS = [{id: "boost", icon: "channel", url: "https://t.me/boost/GramWalletWidget", title: "Boost the channel", title_ru: "Забустить канал", hint: "Telegram Boost · @GramWalletWidget", hint_ru: "Telegram Boost · @GramWalletWidget"},{id: "channel", icon: "channel", url: "https://t.me/GramWalletWidget", title: "Subscribe to the channel", title_ru: "Подписаться на канал", hint: "News and updates · @GramWalletWidget", hint_ru: "Новости и обновления · @GramWalletWidget"},{id: "gifts", icon: "nfts", url: "https://t.me/GiftChanges", title: "Follow GiftChanges", title_ru: "Подписаться на GiftChanges", hint: "Gift stickers · @GiftChanges", hint_ru: "Стикеры подарков · @GiftChanges"},{id: "coonlink", icon: "channel", url: "https://t.me/coonlink", title: "Follow CoonLink", title_ru: "Подписаться на CoonLink", hint: "Author channel · @coonlink", hint_ru: "Канал автора · @coonlink"},{id: "coondev", icon: "coondev", url: "https://t.me/coondev", title: "Follow CoonDev", title_ru: "Подписаться на CoonDev", hint: "Dev channel · @coondev", hint_ru: "Канал разработки · @coondev"}];
 
 async function loadTasks(env) {
   try {
@@ -655,23 +670,85 @@ async function loadTasks(env) {
   return DEFAULT_TASKS;
 }
 
-const DEFAULT_ADS = [
-  {id: "hostinger", url: "https://www.hostinger.com", image: "asset:ads/hostinger.png", title: "Hostinger KVM 1", title_ru: "Hostinger KVM 1", hint: "1280x720 · code coonlink", hint_ru: "1280x720 · код coonlink", button: "Pick up with a discount", button_ru: "Забрать со скидкой"},
-  {id: "support", url: "https://t.me/GramWalletWidget", title: "Support the project", title_ru: "Поддержи проект", hint: "Donate - ads off for supporters", hint_ru: "Донат - спонсорам без рекламы", button: "Open", button_ru: "Открыть"},
-  {id: "channel", url: "https://t.me/GramWalletWidget", title: "Gram Wallet channel", title_ru: "Канал Gram Wallet", hint: "News and updates", hint_ru: "Новости и обновления", button: "Open", button_ru: "Открыть"},
-  {id: "coonlink", url: "https://t.me/coonlink", title: "CoonLink", title_ru: "CoonLink", hint: "Author channel", hint_ru: "Канал автора", button: "Open", button_ru: "Открыть"},
-];
+function json(data, status = 200, extraHeaders = {}) {return new Response(JSON.stringify(data), {status, headers: {"content-type": "application/json", ...extraHeaders}});}
 
-async function loadAds(env) {
-  try {
-    const raw = env?.KV ? await env.KV.get("ads:list") : null;
-    if (raw) {
-      const parsed = JSON.parse(raw);
-      if (Array.isArray(parsed) && parsed.length) {return parsed.filter(a => a && a.id && a.url);}
-      if (parsed && Array.isArray(parsed.ads) && parsed.ads.length) {return parsed.ads.filter(a => a && a.id && a.url);}
-    }
-  } catch (err) {console.error(JSON.stringify({ adsLoad: String(err) }));}
-  return DEFAULT_ADS;
+async function incrStat(env, key, by = 1) {
+  if (!env?.KV || !key) return 0;
+  const n = Number(await env.KV.get(key)) || 0;
+  const next = n + by;
+  await env.KV.put(key, String(next));
+  return next;
 }
 
-function json(data, status = 200, extraHeaders = {}) {return new Response(JSON.stringify(data), {status, headers: {"content-type": "application/json", ...extraHeaders}});}
+async function trackDownload(env, tag) {
+  if (!env?.KV) return;
+  const clean = String(tag || "").trim() || "unknown";
+  await incrStat(env, "stat:dl:total");
+  await incrStat(env, `stat:dl:v:${clean}`);
+}
+
+async function trackWalletHash(env, hash) {
+  const h = String(hash || "").trim().toLowerCase();
+  if (!/^[a-f0-9]{64}$/.test(h)) return { ok: false, error: "hash required", added: false };
+  if (!env?.KV) return { ok: false, error: "kv missing", added: false };
+  const key = `stat:w:${h}`;
+  if (await env.KV.get(key)) return { ok: true, added: false };
+  await env.KV.put(key, "1");
+  const total = await incrStat(env, "stat:wallets");
+  return { ok: true, added: true, wallets: total };
+}
+
+async function loadStats(env) {
+  const downloadsTotal = Number((env?.KV && await env.KV.get("stat:dl:total")) || 0) || 0;
+  const wallets = Number((env?.KV && await env.KV.get("stat:wallets")) || 0) || 0;
+  const opens = Number((env?.KV && await env.KV.get("stat:opens")) || 0) || 0;
+  const versions = [];
+  if (env?.KV) {
+    let cursor;
+    do {
+      const page = await env.KV.list({ prefix: "stat:dl:v:", cursor });
+      for (const item of page.keys || []) {
+        const tag = item.name.slice("stat:dl:v:".length);
+        const count = Number(await env.KV.get(item.name)) || 0;
+        if (tag) versions.push({ tag, count });
+      }
+      cursor = page.list_complete ? null : page.cursor;
+    } while (cursor);
+  }
+  versions.sort((a, b) => b.count - a.count || String(b.tag).localeCompare(String(a.tag)));
+  return { downloadsTotal, wallets, opens, versions, updatedAt: new Date().toISOString() };
+}
+
+function statsHtml(data, lang = "en") {
+  const ru = lang === "ru";
+  const t = ru? {sub: "Скачивания APK и активность приложения", dl: "Скачиваний всего", wallets: "Уникальных кошельков", opens: "Открытий приложения", ver: "Версия", downloads: "Скачиваний", empty: "Пока нет скачиваний", note: "Кошельки считаются по SHA-256 хешу адреса: один адрес — один раз. Сырые адреса не сохраняются.", other: "EN", otherHref: "/stats"}: {sub: "APK downloads and app activity", dl: "Total downloads", wallets: "Unique wallets", opens: "App opens", ver: "Version", downloads: "Downloads", empty: "No downloads yet", note: "Wallets are counted by SHA-256 address hash: one address once. Raw addresses are not stored.", other: "RU", otherHref: "/ru/stats"};
+  const rows = (data.versions || []).map((v) => `<tr><td>${esc(v.tag)}</td><td>${Number(v.count) || 0}</td></tr>`).join("") || `<tr><td colspan="2">${esc(t.empty)}</td></tr>`;
+  return `<!doctype html><html lang="${ru ? "ru" : "en"}"><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/><title>Gram Wallet · Stats</title><style>
+body{margin:0;font-family:ui-sans-serif,system-ui,sans-serif;background:#0b6fd4;color:#fff;min-height:100vh}
+main{max-width:720px;margin:0 auto;padding:28px 18px 48px}
+h1{margin:0 0 8px;font-size:28px;letter-spacing:.04em}
+.top{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin-bottom:8px}
+.lang a{color:#fff;text-decoration:none;opacity:.85;border:1px solid rgba(255,255,255,.35);border-radius:999px;padding:6px 10px;font-size:12px;font-weight:700}
+.sub{opacity:.85;margin-bottom:22px}
+.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;margin-bottom:22px}
+.card{background:rgba(255,255,255,.14);border:1px solid rgba(255,255,255,.22);border-radius:16px;padding:16px}
+.card b{display:block;font-size:28px;margin-top:6px}
+table{width:100%;border-collapse:collapse;background:rgba(255,255,255,.12);border-radius:16px;overflow:hidden}
+th,td{padding:12px 14px;text-align:left;border-bottom:1px solid rgba(255,255,255,.12)}
+th{font-size:12px;letter-spacing:.08em;text-transform:uppercase;opacity:.8}
+tr:last-child td{border-bottom:0}
+.note{margin-top:16px;opacity:.75;font-size:13px;line-height:1.45}
+</style></head><body><main>
+<div class="top"><h1>GRAM WALLET STATS</h1><div class="lang"><a href="${t.otherHref}">${t.other}</a></div></div>
+<p class="sub">${esc(t.sub)}</p>
+<div class="cards">
+<div class="card">${esc(t.dl)}<b>${Number(data.downloadsTotal) || 0}</b></div>
+<div class="card">${esc(t.wallets)}<b>${Number(data.wallets) || 0}</b></div>
+<div class="card">${esc(t.opens)}<b>${Number(data.opens) || 0}</b></div>
+</div>
+<table><thead><tr><th>${esc(t.ver)}</th><th>${esc(t.downloads)}</th></tr></thead><tbody>${rows}</tbody></table>
+<p class="note">${esc(t.note)}</p>
+</main></body></html>`;
+}
+
+function esc(s) {return String(s || "").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");}
