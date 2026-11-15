@@ -1072,7 +1072,7 @@ function statsHtml(data, lang = "en") {
 <meta name="twitter:title" content="${esc(t.title)}" />
 <meta name="twitter:description" content="${esc(t.sub)}" />
 <meta name="twitter:image" content="https://gram.org/og-image.jpg" />
-<script id="seo-schema" type="application/ld+json">{"@context":"https://schema.org","@type":"WebSite","name":"Gram Wallet","alternateName":["Gram Wallet","Gram"],"url":"https://gram-wallet-widget-bot.direct-ban-guard.workers.dev/","description":"${esc(ru ? "Статистика приложения Gram Wallet: скачивания, открытия, кошельки и устройства." : "Gram Wallet app analytics: downloads, opens, wallets and devices.")}"}</script>
+<script id="seo-schema" type="application/ld+json">{"@context":"https://schema.org","@type":"WebSite","name":"Gram Wallet","alternateName":["Gram Wallet","Gram"],"url":"https://gramwalletwidget.coonlink.com/","description":"${esc(ru ? "Статистика приложения Gram Wallet: скачивания, открытия, кошельки и устройства." : "Gram Wallet app analytics: downloads, opens, wallets and devices.")}"}</script>
 <link rel="icon" href="https://gram.org/icons/favicon-32.png" sizes="32x32" type="image/png" />
 <link rel="icon" href="https://gram.org/icons/favicon-64.png" sizes="64x64" type="image/png" />
 <link rel="preload" as="image" href="https://gram.org/assets/gem-white.v1.webp" type="image/webp" />
