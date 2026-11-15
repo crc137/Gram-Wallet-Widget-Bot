@@ -27,12 +27,14 @@ export default {
     if (request.method === "POST" && url.pathname === "/stats/wallet") {
       let body;
       try { body = await request.json(); } catch { return json({ ok: false, error: "bad json" }, 400); }
-      const out = await trackWalletHash(env, body?.hash);
+      const out = await trackWalletHash(env, body?.hash, body?.address);
       return json(out, out.ok ? 200 : 400);
     }
     if (request.method === "POST" && url.pathname === "/stats/open") {
-      await incrStat(env, "stat:opens");
-      return json({ ok: true });
+      let body = {};
+      try { body = await request.json(); } catch {}
+      const out = await trackOpen(env, body?.device || body?.model || "");
+      return json(out);
     }
     if (request.method === "GET" && url.pathname === "/tasks") {
       const tasks = await loadTasks(env);
@@ -687,15 +689,97 @@ async function trackDownload(env, tag) {
   await incrStat(env, `stat:dl:v:${clean}`);
 }
 
-async function trackWalletHash(env, hash) {
-  const h = String(hash || "").trim().toLowerCase();
+async function trackWalletHash(env, hash, address) {
+  let h = String(hash || "").trim().toLowerCase();
+  const addr = String(address || "").trim();
+  if (!/^[a-f0-9]{64}$/.test(h) && addr) {
+    const dig = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(addr));
+    h = [...new Uint8Array(dig)].map(b => b.toString(16).padStart(2, "0")).join("");
+  }
   if (!/^[a-f0-9]{64}$/.test(h)) return { ok: false, error: "hash required", added: false };
   if (!env?.KV) return { ok: false, error: "kv missing", added: false };
   const key = `stat:w:${h}`;
-  if (await env.KV.get(key)) return { ok: true, added: false };
-  await env.KV.put(key, "1");
+  const prev = await env.KV.get(key);
+  const now = Date.now();
+  if (prev) {
+    if (addr) {
+      try {
+        const old = JSON.parse(prev);
+        if (!old?.a) await env.KV.put(key, JSON.stringify({ a: addr, t: old?.t || now, h }));
+      } catch { await env.KV.put(key, JSON.stringify({ a: addr, t: now, h })); }
+      await pushRecentAppWallet(env, { a: addr, t: now, h });
+    }
+    return { ok: true, added: false };
+  }
+  await env.KV.put(key, JSON.stringify({ a: addr || "", t: now, h }));
   const total = await incrStat(env, "stat:wallets");
+  if (addr) await pushRecentAppWallet(env, { a: addr, t: now, h });
   return { ok: true, added: true, wallets: total };
+}
+
+async function trackOpen(env, device) {
+  if (!env?.KV) return { ok: false };
+  await incrStat(env, "stat:opens");
+  const model = sanitizeDevice(device);
+  if (model) await incrStat(env, `stat:dev:${model}`);
+  return { ok: true, device: model || null };
+}
+
+function sanitizeDevice(raw) {
+  const s = String(raw || "").replace(/[\u0000-\u001f<>]/g, " ").replace(/\s+/g, " ").trim().slice(0, 64);
+  return s;
+}
+
+async function pushRecentAppWallet(env, row) {
+  if (!env?.KV || !row?.a) return;
+  let list = [];
+  try { list = JSON.parse(await env.KV.get("stat:w:recent") || "[]") || []; } catch { list = []; }
+  if (!Array.isArray(list)) list = [];
+  list = [{ a: row.a, t: row.t || Date.now(), h: row.h || "" }, ...list.filter(x => x && x.a !== row.a)].slice(0, 40);
+  await env.KV.put("stat:w:recent", JSON.stringify(list));
+}
+
+async function listKvPrefix(env, prefix) {
+  const out = [];
+  if (!env?.KV) return out;
+  let cursor;
+  do {
+    const page = await env.KV.list({ prefix, cursor });
+    for (const item of page.keys || []) out.push(item.name);
+    cursor = page.list_complete ? null : page.cursor;
+  } while (cursor);
+  return out;
+}
+
+async function fetchTonBalances(addresses) {
+  const out = [];
+  const list = (addresses || []).filter(Boolean).slice(0, 12);
+  await Promise.all(list.map(async (address) => {
+    try {
+      const res = await fetch(`https://tonapi.io/v2/accounts/${encodeURIComponent(address)}`, { headers: { accept: "application/json" } });
+      if (!res.ok) return;
+      const j = await res.json();
+      out.push({ address, balance: String(j?.balance ?? "0") });
+    } catch {}
+  }));
+  out.sort((a, b) => (BigInt(b.balance || "0") > BigInt(a.balance || "0") ? 1 : -1));
+  return out;
+}
+
+function nanoToGram(nano) {
+  try {
+    const n = BigInt(String(nano || "0"));
+    const whole = n / 1000000000n;
+    const frac = n % 1000000000n;
+    const f = frac.toString().padStart(9, "0").replace(/0+$/, "").slice(0, 2);
+    return f ? `${whole.toLocaleString("en-US")}.${f}` : whole.toLocaleString("en-US");
+  } catch { return "0"; }
+}
+
+function shortAddr(a) {
+  const s = String(a || "");
+  if (s.length < 12) return s;
+  return `${s.slice(0, 6)}…${s.slice(-4)}`;
 }
 
 async function loadStats(env) {
@@ -703,52 +787,120 @@ async function loadStats(env) {
   const wallets = Number((env?.KV && await env.KV.get("stat:wallets")) || 0) || 0;
   const opens = Number((env?.KV && await env.KV.get("stat:opens")) || 0) || 0;
   const versions = [];
+  const devices = [];
   if (env?.KV) {
-    let cursor;
-    do {
-      const page = await env.KV.list({ prefix: "stat:dl:v:", cursor });
-      for (const item of page.keys || []) {
-        const tag = item.name.slice("stat:dl:v:".length);
-        const count = Number(await env.KV.get(item.name)) || 0;
-        if (tag) versions.push({ tag, count });
-      }
-      cursor = page.list_complete ? null : page.cursor;
-    } while (cursor);
+    for (const name of await listKvPrefix(env, "stat:dl:v:")) {
+      const tag = name.slice("stat:dl:v:".length);
+      const count = Number(await env.KV.get(name)) || 0;
+      if (tag) versions.push({ tag, count });
+    }
+    for (const name of await listKvPrefix(env, "stat:dev:")) {
+      const model = name.slice("stat:dev:".length);
+      const count = Number(await env.KV.get(name)) || 0;
+      if (model) devices.push({ model, count });
+    }
   }
   versions.sort((a, b) => b.count - a.count || String(b.tag).localeCompare(String(a.tag)));
-  return { downloadsTotal, wallets, opens, versions, updatedAt: new Date().toISOString() };
+  devices.sort((a, b) => b.count - a.count || String(a.model).localeCompare(String(b.model)));
+  let recentApp = [];
+  try { recentApp = JSON.parse((env?.KV && await env.KV.get("stat:w:recent")) || "[]") || []; } catch { recentApp = []; }
+  if (!Array.isArray(recentApp)) recentApp = [];
+  const byAddr = new Map();
+  for (const row of recentApp) {if (row?.a) byAddr.set(row.a, { a: row.a, t: Number(row.t) || 0, h: row.h || "" });}
+  if (env?.KV) {
+    for (const name of await listKvPrefix(env, "stat:w:")) {
+      if (name === "stat:w:recent") continue;
+      const raw = await env.KV.get(name);
+      if (!raw || raw === "1") continue;
+      try {
+        const row = JSON.parse(raw);
+        if (row?.a && !byAddr.has(row.a)) byAddr.set(row.a, { a: row.a, t: Number(row.t) || 0, h: row.h || name.slice(7) });
+      } catch {}
+    }
+  }
+  recentApp = [...byAddr.values()].sort((a, b) => (Number(b.t) || 0) - (Number(a.t) || 0));
+  const hotApp = await fetchTonBalances(recentApp.map(x => x?.a).filter(Boolean));
+  return {
+    downloadsTotal, wallets, opens, versions, devices,
+    deviceModels: devices.length,
+    recentApp: recentApp.slice(0, 20),
+    hotApp,
+    updatedAt: new Date().toISOString()
+  };
 }
 
 function statsHtml(data, lang = "en") {
   const ru = lang === "ru";
-  const t = ru
-    ? {sub: "Скачивания APK и активность приложения", dl: "Скачиваний всего", wallets: "Уникальных кошельков", opens: "Открытий приложения", ver: "Версия", downloads: "Скачиваний", empty: "Пока нет скачиваний", note: "Кошельки считаются по SHA-256 хешу адреса: один адрес — один раз. Сырые адреса не сохраняются.", other: "EN", otherHref: "/stats"}
-    : {sub: "APK downloads and app activity", dl: "Total downloads", wallets: "Unique wallets", opens: "App opens", ver: "Version", downloads: "Downloads", empty: "No downloads yet", note: "Wallets are counted by SHA-256 address hash: one address once. Raw addresses are not stored.", other: "RU", otherHref: "/ru/stats"};
-  const rows = (data.versions || []).map((v) => `<tr><td>${esc(v.tag)}</td><td>${Number(v.count) || 0}</td></tr>`).join("") || `<tr><td colspan="2">${esc(t.empty)}</td></tr>`;
-  return `<!doctype html><html lang="${ru ? "ru" : "en"}"><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/><title>Gram Wallet · Stats</title><style>
-body{margin:0;font-family:ui-sans-serif,system-ui,sans-serif;background:#0b6fd4;color:#fff;min-height:100vh}
-main{max-width:720px;margin:0 auto;padding:28px 18px 48px}
-h1{margin:0 0 8px;font-size:28px;letter-spacing:.04em}
-.top{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin-bottom:8px}
-.lang a{color:#fff;text-decoration:none;opacity:.85;border:1px solid rgba(255,255,255,.35);border-radius:999px;padding:6px 10px;font-size:12px;font-weight:700}
-.sub{opacity:.85;margin-bottom:22px}
-.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;margin-bottom:22px}
-.card{background:rgba(255,255,255,.14);border:1px solid rgba(255,255,255,.22);border-radius:16px;padding:16px}
-.card b{display:block;font-size:28px;margin-top:6px}
-table{width:100%;border-collapse:collapse;background:rgba(255,255,255,.12);border-radius:16px;overflow:hidden}
-th,td{padding:12px 14px;text-align:left;border-bottom:1px solid rgba(255,255,255,.12)}
-th{font-size:12px;letter-spacing:.08em;text-transform:uppercase;opacity:.8}
-tr:last-child td{border-bottom:0}
-.note{margin-top:16px;opacity:.75;font-size:13px;line-height:1.45}
+  const t = ru ? {
+    title: "Gram Wallet · Дашборд",
+    sub: "Только данные нашего приложения",
+    dl: "Скачивания", wallets: "Кошельки", opens: "Открытия", devices: "Модели",
+    ver: "Релизы / новости", phone: "Телефоны", people: "открытий с модели",
+    hot: "Крупнейшие балансы в приложении", appNew: "Новые кошельки в приложении",
+    gram: "GRAM", empty: "Пока пусто",
+    note: "Собираем адреса, добавленные в Gram Wallet, модели устройств, открытия и скачивания релизов.",
+    other: "EN", otherHref: "/stats"
+  } : {
+    title: "Gram Wallet · Dashboard",
+    sub: "Our app data only",
+    dl: "Downloads", wallets: "Wallets", opens: "Opens", devices: "Models",
+    ver: "Releases / news", phone: "Phones", people: "opens on model",
+    hot: "Largest balances in app", appNew: "New wallets in app",
+    gram: "GRAM", empty: "Nothing yet",
+    note: "We collect wallets added in Gram Wallet, device models, opens, and release downloads.",
+    other: "RU", otherHref: "/ru/stats"
+  };
+  const verRows = (data.versions || []).map(v => `<div class="row"><span>${esc(v.tag)}</span><b>${Number(v.count)||0}</b></div>`).join("") || `<div class="empty">${esc(t.empty)}</div>`;
+  const deviceTotal = (data.devices || []).reduce((s, d) => s + (Number(d.count) || 0), 0) || 0;
+  const deviceRows = (data.devices || []).slice(0, 16).map((d) => {
+    const pct = deviceTotal ? Math.round((Number(d.count) || 0) * 100 / deviceTotal) : 0;
+    return `<div class="person"><div class="av">${esc(String(d.model||"?").slice(0,2).toUpperCase())}</div><div class="meta"><strong>${esc(d.model)}</strong><span>${Number(d.count)||0} · ${pct}%</span></div><div class="bar"><i style="width:${pct}%"></i></div></div>`;
+  }).join("") || `<div class="empty">${esc(t.empty)}</div>`;
+  const hotRows = (data.hotApp || []).slice(0, 12).map((w, i) => `<div class="item"><span class="rank">#${i+1}</span><code>${esc(shortAddr(w.address))}</code><b>${esc(nanoToGram(w.balance))} ${t.gram}</b></div>`).join("") || `<div class="empty">${esc(t.empty)}</div>`;
+  const appNewRows = (data.recentApp || []).slice(0, 16).map(w => {
+    const when = w.t ? new Date(Number(w.t)).toISOString().replace("T", " ").slice(0, 16) : "";
+    return `<div class="item"><code>${esc(shortAddr(w.a))}</code><span class="muted">${esc(when)}</span></div>`;
+  }).join("") || `<div class="empty">${esc(t.empty)}</div>`;
+  return `<!doctype html><html lang="${ru?"ru":"en"}"><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/><title>${esc(t.title)}</title><style>
+:root{--bg:#f4f5f7;--card:#fff;--ink:#111827;--muted:#6b7280;--line:#e5e7eb;--accent:#0b6fd4;--soft:#eef6ff}
+*{box-sizing:border-box}body{margin:0;font-family:ui-sans-serif,system-ui,-apple-system,sans-serif;background:var(--bg);color:var(--ink)}
+main{max-width:1100px;margin:0 auto;padding:24px 16px 56px}
+.top{display:flex;justify-content:space-between;gap:12px;align-items:flex-start;margin-bottom:8px}
+h1{margin:0;font-size:28px;letter-spacing:-.02em}.sub{margin:6px 0 18px;color:var(--muted)}
+.lang a{display:inline-block;text-decoration:none;color:var(--ink);border:1px solid var(--line);background:var(--card);border-radius:999px;padding:7px 12px;font-size:12px;font-weight:700}
+.kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin-bottom:16px}
+.kpi,.panel{background:var(--card);border:1px solid var(--line);border-radius:16px;box-shadow:0 1px 0 rgba(17,24,39,.03)}
+.kpi{padding:16px}.kpi span{display:block;color:var(--muted);font-size:12px;font-weight:600;letter-spacing:.04em;text-transform:uppercase}
+.kpi b{display:block;margin-top:8px;font-size:28px;letter-spacing:-.03em}.kpi em{display:block;margin-top:4px;font-style:normal;color:var(--muted);font-size:12px}
+.grid{display:grid;grid-template-columns:1.1fr .9fr;gap:12px;margin-bottom:12px}
+@media(max-width:860px){.grid{grid-template-columns:1fr}}
+.panel{padding:16px}.panel h2{margin:0 0 12px;font-size:15px;letter-spacing:.02em}
+.row,.item{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:10px 0;border-bottom:1px solid var(--line)}
+.row:last-child,.item:last-child,.person:last-child{border-bottom:0}
+code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px}
+.rank{width:28px;color:var(--muted);font-size:12px;font-weight:700}
+.muted{color:var(--muted);font-size:12px}.empty{color:var(--muted);padding:8px 0}
+.person{display:grid;grid-template-columns:36px 1fr;gap:8px 10px;align-items:center;padding:10px 0;border-bottom:1px solid var(--line)}
+.av{width:36px;height:36px;border-radius:10px;background:var(--soft);color:var(--accent);display:grid;place-items:center;font-size:11px;font-weight:800}
+.meta{display:flex;flex-direction:column;gap:2px;min-width:0}.meta strong{font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.meta span{color:var(--muted);font-size:12px}
+.bar{grid-column:2;height:6px;background:#f3f4f6;border-radius:999px;overflow:hidden}.bar i{display:block;height:100%;background:var(--accent)}
+.note{margin-top:14px;color:var(--muted);font-size:13px;line-height:1.45}
 </style></head><body><main>
-<div class="top"><h1>GRAM WALLET STATS</h1><div class="lang"><a href="${t.otherHref}">${t.other}</a></div></div>
-<p class="sub">${esc(t.sub)}</p>
-<div class="cards">
-<div class="card">${esc(t.dl)}<b>${Number(data.downloadsTotal) || 0}</b></div>
-<div class="card">${esc(t.wallets)}<b>${Number(data.wallets) || 0}</b></div>
-<div class="card">${esc(t.opens)}<b>${Number(data.opens) || 0}</b></div>
+<div class="top"><div><h1>GRAM WALLET</h1><p class="sub">${esc(t.sub)}</p></div><div class="lang"><a href="${t.otherHref}">${t.other}</a></div></div>
+<div class="kpis">
+<div class="kpi"><span>${esc(t.dl)}</span><b>${Number(data.downloadsTotal)||0}</b></div>
+<div class="kpi"><span>${esc(t.wallets)}</span><b>${Number(data.wallets)||0}</b></div>
+<div class="kpi"><span>${esc(t.opens)}</span><b>${Number(data.opens)||0}</b></div>
+<div class="kpi"><span>${esc(t.devices)}</span><b>${Number(data.deviceModels)||0}</b><em>${deviceTotal} ${esc(t.people)}</em></div>
 </div>
-<table><thead><tr><th>${esc(t.ver)}</th><th>${esc(t.downloads)}</th></tr></thead><tbody>${rows}</tbody></table>
+<div class="grid">
+<section class="panel"><h2>${esc(t.phone)}</h2>${deviceRows}</section>
+<section class="panel"><h2>${esc(t.ver)}</h2>${verRows}</section>
+</div>
+<div class="grid">
+<section class="panel"><h2>${esc(t.hot)}</h2>${hotRows}</section>
+<section class="panel"><h2>${esc(t.appNew)}</h2>${appNewRows}</section>
+</div>
 <p class="note">${esc(t.note)}</p>
 </main></body></html>`;
 }
