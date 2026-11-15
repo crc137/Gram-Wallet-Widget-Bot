@@ -656,9 +656,10 @@ async function loadTasks(env) {
 }
 
 const DEFAULT_ADS = [
-  {id: "support", url: "https://t.me/GramWalletWidget", title: "Support the project", title_ru: "Поддержи проект", hint: "Donate - ads off for supporters", hint_ru: "Донат - спонсорам без рекламы"},
-  {id: "channel", url: "https://t.me/GramWalletWidget", title: "Gram Wallet channel", title_ru: "Канал Gram Wallet", hint: "News and updates", hint_ru: "Новости и обновления"},
-  {id: "coonlink", url: "https://t.me/coonlink", title: "CoonLink", title_ru: "CoonLink", hint: "Author channel", hint_ru: "Канал автора"},
+  {id: "hostinger", url: "https://www.hostinger.com", image: "asset:ads/hostinger.png", title: "Hostinger KVM 1", title_ru: "Hostinger KVM 1", hint: "1280x720 · code coonlink", hint_ru: "1280x720 · код coonlink", button: "Pick up with a discount", button_ru: "Забрать со скидкой"},
+  {id: "support", url: "https://t.me/GramWalletWidget", title: "Support the project", title_ru: "Поддержи проект", hint: "Donate - ads off for supporters", hint_ru: "Донат - спонсорам без рекламы", button: "Open", button_ru: "Открыть"},
+  {id: "channel", url: "https://t.me/GramWalletWidget", title: "Gram Wallet channel", title_ru: "Канал Gram Wallet", hint: "News and updates", hint_ru: "Новости и обновления", button: "Open", button_ru: "Открыть"},
+  {id: "coonlink", url: "https://t.me/coonlink", title: "CoonLink", title_ru: "CoonLink", hint: "Author channel", hint_ru: "Канал автора", button: "Open", button_ru: "Открыть"},
 ];
 
 async function loadAds(env) {
