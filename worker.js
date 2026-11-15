@@ -553,11 +553,14 @@ async function listSubs(env) {
 }
 
 function channelTargets() {
-  const fallback = ["@GramWalletWidget", "-1003916775056"];
   const ids = Array.isArray(config.channelChatIds) ? config.channelChatIds.slice() : [];
   if (config.channelChatId && !ids.includes(config.channelChatId)) ids.unshift(config.channelChatId);
-  for (const id of fallback) if (!ids.includes(id)) ids.push(id);
-  return ids.map((x) => String(x || "").trim()).filter(Boolean);
+  const out = [];
+  for (const raw of ids) {
+    const id = String(raw || "").trim();
+    if (id && !out.includes(id)) out.push(id);
+  }
+  return out.length ? out.slice(0, 1) : ["@GramWalletWidget"];
 }
 
 async function postReleaseToChannel(token, rel, apk, fileId) {
@@ -589,10 +592,13 @@ async function postReleaseToChannel(token, rel, apk, fileId) {
 async function pushReleaseToChannel(env) {
   const rel = await getLatestRelease();
   if (!rel?.tag_name) return { ok: false, error: "no_release" };
+  const already = env?.KV ? await env.KV.get("last_channel_tag") : null;
+  if (already === rel.tag_name) return { ok: true, tag: rel.tag_name, chatId: null, skipped: true };
   const apk = apkFromRelease(rel);
   if (!apk.url) return { ok: false, error: "no_apk", tag: rel.tag_name };
   const out = await postReleaseToChannel(env.BOT_TOKEN, rel, apk, cachedApkFileId(apk.tag));
   if (out.fileId) rememberApkFileId(apk.tag, out.fileId);
+  if (out.ok && env?.KV) await env.KV.put("last_channel_tag", rel.tag_name);
   return { ok: !!out.ok, tag: rel.tag_name, chatId: out.chatId || null, error: out.error || null };
 }
 
@@ -604,6 +610,7 @@ async function checkNewRelease(env) {
   if (last === rel.tag_name) return;
   if (!last) {
     await env.KV.put("last_tag", rel.tag_name);
+    await env.KV.put("last_channel_tag", rel.tag_name);
     return;
   }
   apkCache = { tag: "", fileId: null };
@@ -613,9 +620,13 @@ async function checkNewRelease(env) {
     return;
   }
   let fileId = null;
-  const channel = await postReleaseToChannel(env.BOT_TOKEN, rel, apk, null);
-  if (channel.fileId) fileId = channel.fileId;
-  if (!channel.ok) console.error(JSON.stringify({ channelNotify: channel }));
+  const lastChannel = await env.KV.get("last_channel_tag");
+  if (lastChannel !== rel.tag_name) {
+    const channel = await postReleaseToChannel(env.BOT_TOKEN, rel, apk, null);
+    if (channel.fileId) fileId = channel.fileId;
+    if (channel.ok) await env.KV.put("last_channel_tag", rel.tag_name);
+    else console.error(JSON.stringify({ channelNotify: channel }));
+  }
   const keys = await listSubs(env);
   let ok = 0;
   let fail = 0;
