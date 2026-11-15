@@ -1191,7 +1191,6 @@ ul li.empty{padding:14px 16px;color:var(--mute2);font-size:13px}
         <div>
           <p class="hero-copy">${esc(t.heroHint)}</p>
           <div class="hero-metrics"><b>${downloads}</b><span>${esc(t.doneOf)}</span></div>
-          <div class="progress"><i style="width:${progress}%"></i></div>
         </div>
         <dl class="tiles">
           <div class="tile"><dt>${esc(t.wallets)}</dt><dd>${wallets}</dd></div>
