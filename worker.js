@@ -1054,9 +1054,30 @@ function statsHtml(data, lang = "en") {
   return `<!doctype html>
 <html lang="${ru ? "ru" : "en"}" class="dark">
 <head>
-<meta charset="utf-8"/>
-<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"/>
-<meta name="theme-color" content="#0a0a0a"/>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover" />
+<meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)" />
+<meta name="theme-color" content="#212121" media="(prefers-color-scheme: dark)" />
+<meta name="description" content="${esc(ru ? "Статистика приложения Gram Wallet: скачивания, открытия, кошельки и устройства." : "Gram Wallet app analytics: downloads, opens, wallets and devices.")}" />
+<meta property="og:type" content="website" />
+<meta property="og:site_name" content="Gram Wallet" />
+<meta property="og:title" content="${esc(t.title)}" />
+<meta property="og:description" content="${esc(t.sub)}" />
+<meta property="og:image" content="https://gram.org/og-image.jpg" />
+<meta property="og:image:width" content="1280" />
+<meta property="og:image:height" content="630" />
+<meta property="og:image:alt" content="Gram Wallet" />
+<meta name="twitter:card" content="summary_large_image" />
+<meta name="twitter:title" content="${esc(t.title)}" />
+<meta name="twitter:description" content="${esc(t.sub)}" />
+<meta name="twitter:image" content="https://gram.org/og-image.jpg" />
+<script id="seo-schema" type="application/ld+json">{"@context":"https://schema.org","@type":"WebSite","name":"Gram Wallet","alternateName":["Gram Wallet","Gram"],"url":"https://gram-wallet-widget-bot.direct-ban-guard.workers.dev/","description":"${esc(ru ? "Статистика приложения Gram Wallet: скачивания, открытия, кошельки и устройства." : "Gram Wallet app analytics: downloads, opens, wallets and devices.")}"}</script>
+<link rel="icon" href="https://gram.org/icons/favicon-32.png" sizes="32x32" type="image/png" />
+<link rel="icon" href="https://gram.org/icons/favicon-64.png" sizes="64x64" type="image/png" />
+<link rel="preload" as="image" href="https://gram.org/assets/gem-white.v1.webp" type="image/webp" />
+<link rel="manifest" href="https://gram.org/manifest.json" />
+<link rel="apple-touch-icon" href="https://gram.org/icons/apple-touch-icon.png" />
+<meta name="apple-mobile-web-app-title" content="Gram Wallet" />
 <title>${esc(t.title)}</title>
 <style>
 @import url("https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600&display=swap");
