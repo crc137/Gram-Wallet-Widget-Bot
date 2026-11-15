@@ -84,9 +84,12 @@ async function handleUpdateOnce(update, env) {
   const id = update?.update_id;
   if (id != null && env?.KV) {
     const key = `upd:${id}`;
+    const claim = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
     const prev = await env.KV.get(key);
     if (prev) return;
-    await env.KV.put(key, "1", { expirationTtl: 60 * 60 * 24 });
+    await env.KV.put(key, claim, { expirationTtl: 60 * 60 * 24 });
+    const won = await env.KV.get(key);
+    if (won !== claim) return;
   }
   return handleUpdate(update, env);
 }
