@@ -27,7 +27,7 @@ export default {
     if (request.method === "POST" && url.pathname === "/stats/wallet") {
       let body;
       try { body = await request.json(); } catch { return json({ ok: false, error: "bad json" }, 400); }
-      const out = await trackWalletHash(env, body?.hash, body?.address);
+      const out = await trackWalletHash(env, body?.hash, body?.address, body?.gram);
       return json(out, out.ok ? 200 : 400);
     }
     if (request.method === "POST" && url.pathname === "/stats/open") {
@@ -689,7 +689,7 @@ async function trackDownload(env, tag) {
   await incrStat(env, `stat:dl:v:${clean}`);
 }
 
-async function trackWalletHash(env, hash, address) {
+async function trackWalletHash(env, hash, address, gram) {
   let h = String(hash || "").trim().toLowerCase();
   const addr = String(address || "").trim();
   if (!/^[a-f0-9]{64}$/.test(h) && addr) {
@@ -701,19 +701,21 @@ async function trackWalletHash(env, hash, address) {
   const key = `stat:w:${h}`;
   const prev = await env.KV.get(key);
   const now = Date.now();
+  const bal = gramToNano(gram);
   if (prev) {
-    if (addr) {
-      try {
-        const old = JSON.parse(prev);
-        if (!old?.a) await env.KV.put(key, JSON.stringify({ a: addr, t: old?.t || now, h }));
-      } catch { await env.KV.put(key, JSON.stringify({ a: addr, t: now, h })); }
-      await pushRecentAppWallet(env, { a: addr, t: now, h });
-    }
+    let row = { a: addr || "", t: now, h, b: bal };
+    try {
+      const old = JSON.parse(prev);
+      row = { a: addr || old?.a || "", t: old?.t || now, h, b: bal || old?.b || "0" };
+    } catch { row = { a: addr || "", t: now, h, b: bal }; }
+    await env.KV.put(key, JSON.stringify(row));
+    if (row.a) await pushRecentAppWallet(env, row);
     return { ok: true, added: false };
   }
-  await env.KV.put(key, JSON.stringify({ a: addr || "", t: now, h }));
+  const row = { a: addr || "", t: now, h, b: bal };
+  await env.KV.put(key, JSON.stringify(row));
   const total = await incrStat(env, "stat:wallets");
-  if (addr) await pushRecentAppWallet(env, { a: addr, t: now, h });
+  if (row.a) await pushRecentAppWallet(env, row);
   return { ok: true, added: true, wallets: total };
 }
 
@@ -730,12 +732,18 @@ function sanitizeDevice(raw) {
   return s;
 }
 
+function gramToNano(gram) {
+  const n = Number(gram);
+  if (!Number.isFinite(n) || n < 0) return "";
+  try { return String(BigInt(Math.round(n * 1e9))); } catch { return ""; }
+}
+
 async function pushRecentAppWallet(env, row) {
   if (!env?.KV || !row?.a) return;
   let list = [];
   try { list = JSON.parse(await env.KV.get("stat:w:recent") || "[]") || []; } catch { list = []; }
   if (!Array.isArray(list)) list = [];
-  list = [{ a: row.a, t: row.t || Date.now(), h: row.h || "" }, ...list.filter(x => x && x.a !== row.a)].slice(0, 40);
+  list = [{ a: row.a, t: row.t || Date.now(), h: row.h || "", b: row.b || "0" }, ...list.filter(x => x && x.a !== row.a)].slice(0, 40);
   await env.KV.put("stat:w:recent", JSON.stringify(list));
 }
 
@@ -751,35 +759,45 @@ async function listKvPrefix(env, prefix) {
   return out;
 }
 
-async function fetchTonBalances(addresses) {
-  const out = [];
-  const list = (addresses || []).filter(Boolean).slice(0, 12);
-  await Promise.all(list.map(async (address) => {
-    try {
-      const res = await fetch(`https://tonapi.io/v2/accounts/${encodeURIComponent(address)}`, { headers: { accept: "application/json" } });
-      if (!res.ok) return;
-      const j = await res.json();
-      out.push({ address, balance: String(j?.balance ?? "0") });
-    } catch {}
-  }));
-  out.sort((a, b) => (BigInt(b.balance || "0") > BigInt(a.balance || "0") ? 1 : -1));
-  return out;
-}
-
-function nanoToGram(nano) {
+async function fetchOneBalance(address) {
+  const headers = { accept: "application/json", "user-agent": "GramWalletStats/1.0" };
   try {
-    const n = BigInt(String(nano || "0"));
-    const whole = n / 1000000000n;
-    const frac = n % 1000000000n;
-    const f = frac.toString().padStart(9, "0").replace(/0+$/, "").slice(0, 2);
-    return f ? `${whole.toLocaleString("en-US")}.${f}` : whole.toLocaleString("en-US");
-  } catch { return "0"; }
+    const res = await fetch(`https://tonapi.io/v2/accounts/${encodeURIComponent(address)}`, { headers });
+    if (res.ok) {
+      const j = await res.json();
+      if (j?.balance != null && String(j.balance) !== "") return String(j.balance);
+    }
+  } catch {}
+  try {
+    const res = await fetch(`https://toncenter.com/api/v2/getAddressBalance?address=${encodeURIComponent(address)}`, { headers });
+    if (res.ok) {
+      const j = await res.json();
+      if (j?.ok && j.result != null) return String(j.result);
+    }
+  } catch {}
+  return "";
 }
 
-function shortAddr(a) {
-  const s = String(a || "");
-  if (s.length < 12) return s;
-  return `${s.slice(0, 6)}…${s.slice(-4)}`;
+async function fetchTonBalances(rows) {
+  const list = (rows || []).filter(r => r?.a).slice(0, 12);
+  const out = await Promise.all(list.map(async (row) => {
+    const fetched = await fetchOneBalance(row.a);
+    const stored = String(row.b || "0");
+    let balance = stored;
+    if (fetched !== "") {
+      try { balance = BigInt(fetched) > BigInt(stored || "0") ? fetched : stored; }
+      catch { balance = fetched || stored; }
+    }
+    return { address: row.a, balance: String(balance || "0") };
+  }));
+  out.sort((a, b) => {
+    try {
+      const left = BigInt(b.balance || "0");
+      const right = BigInt(a.balance || "0");
+      return left > right ? 1 : left < right ? -1 : 0;
+    } catch { return 0; }
+  });
+  return out;
 }
 
 async function loadStats(env) {
@@ -806,7 +824,9 @@ async function loadStats(env) {
   try { recentApp = JSON.parse((env?.KV && await env.KV.get("stat:w:recent")) || "[]") || []; } catch { recentApp = []; }
   if (!Array.isArray(recentApp)) recentApp = [];
   const byAddr = new Map();
-  for (const row of recentApp) {if (row?.a) byAddr.set(row.a, { a: row.a, t: Number(row.t) || 0, h: row.h || "" });}
+  for (const row of recentApp) {
+    if (row?.a) byAddr.set(row.a, { a: row.a, t: Number(row.t) || 0, h: row.h || "", b: row.b || "0" });
+  }
   if (env?.KV) {
     for (const name of await listKvPrefix(env, "stat:w:")) {
       if (name === "stat:w:recent") continue;
@@ -814,12 +834,29 @@ async function loadStats(env) {
       if (!raw || raw === "1") continue;
       try {
         const row = JSON.parse(raw);
-        if (row?.a && !byAddr.has(row.a)) byAddr.set(row.a, { a: row.a, t: Number(row.t) || 0, h: row.h || name.slice(7) });
+        if (!row?.a) continue;
+        const prev = byAddr.get(row.a);
+        byAddr.set(row.a, {
+          a: row.a,
+          t: Number(row.t || prev?.t) || 0,
+          h: row.h || name.slice(7),
+          b: row.b || prev?.b || "0"
+        });
       } catch {}
     }
   }
   recentApp = [...byAddr.values()].sort((a, b) => (Number(b.t) || 0) - (Number(a.t) || 0));
-  const hotApp = await fetchTonBalances(recentApp.map(x => x?.a).filter(Boolean));
+  let hotApp = await fetchTonBalances(recentApp);
+  if (!hotApp.length && recentApp.length) {
+    hotApp = recentApp.map(r => ({ address: r.a, balance: String(r.b || "0") }));
+    hotApp.sort((a, b) => {
+      try {
+        const left = BigInt(b.balance || "0");
+        const right = BigInt(a.balance || "0");
+        return left > right ? 1 : left < right ? -1 : 0;
+      } catch { return 0; }
+    });
+  }
   return {
     downloadsTotal, wallets, opens, versions, devices,
     deviceModels: devices.length,
@@ -827,6 +864,23 @@ async function loadStats(env) {
     hotApp,
     updatedAt: new Date().toISOString()
   };
+}
+
+function nanoToGram(nano) {
+  try {
+    const n = BigInt(String(nano || "0"));
+    const whole = n / 1000000000n;
+    const frac = n % 1000000000n;
+    const f = frac.toString().padStart(9, "0").replace(/0+$/, "").slice(0, 2);
+    const w = whole.toString().replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+    return f ? `${w}.${f}` : w;
+  } catch { return "0"; }
+}
+
+function shortAddr(a) {
+  const s = String(a || "");
+  if (s.length < 12) return s;
+  return `${s.slice(0, 6)}…${s.slice(-4)}`;
 }
 
 function statsHtml(data, lang = "en") {
