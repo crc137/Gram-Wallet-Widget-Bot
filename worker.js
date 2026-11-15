@@ -27,11 +27,13 @@ export default {
     if (request.method === "POST" && url.pathname === "/stats/wallet") {
       let body;
       try { body = await request.json(); } catch { return json({ ok: false, error: "bad json" }, 400); }
-      const out = await trackWalletHash(env, body?.hash);
+      const out = await trackWalletHash(env, body?.hash, body?.address);
       return json(out, out.ok ? 200 : 400);
     }
     if (request.method === "POST" && url.pathname === "/stats/open") {
-      await incrStat(env, "stat:opens");
+      let body = {};
+      try { body = await request.json(); } catch {}
+      await trackOpen(env, body);
       return json({ ok: true });
     }
     if (request.method === "GET" && url.pathname === "/tasks") {
@@ -687,15 +689,96 @@ async function trackDownload(env, tag) {
   await incrStat(env, `stat:dl:v:${clean}`);
 }
 
-async function trackWalletHash(env, hash) {
+async function trackOpen(env, body) {
+  await incrStat(env, "stat:opens");
+  if (!env?.KV) return;
+  const model = cleanDevice(body?.model || body?.device);
+  if (!model) return;
+  await incrStat(env, `stat:dev:${model}`);
+}
+
+function cleanDevice(raw) {
+  return String(raw || "").trim().slice(0, 72).replace(/[^\w.\-+() /]/gi, "_").replace(/\s+/g, " ").trim();
+}
+
+function shortAddr(a) {
+  const s = String(a || "");
+  if (s.length <= 14) return s;
+  return s.slice(0, 6) + "…" + s.slice(-4);
+}
+
+function formatGram(nano) {
+  const n = Number(nano);
+  if (!Number.isFinite(n)) return "—";
+  const g = n / 1e9;
+  if (g >= 1000) return g.toLocaleString("en-US", { maximumFractionDigits: 1 });
+  if (g >= 1) return g.toLocaleString("en-US", { maximumFractionDigits: 2 });
+  return g.toLocaleString("en-US", { maximumFractionDigits: 4 });
+}
+
+async function fetchBalanceNano(address) {
+  try {
+    const res = await fetch(`https://tonapi.io/v2/accounts/${encodeURIComponent(address)}`, { headers: { accept: "application/json" } });
+    if (!res.ok) return null;
+    const j = await res.json();
+    if (j?.balance == null) return null;
+    return String(j.balance);
+  } catch { return null; }
+}
+
+async function readJsonList(env, key) {
+  try {
+    const raw = env?.KV ? await env.KV.get(key) : null;
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch { return []; }
+}
+
+async function writeJsonList(env, key, list) {
+  if (!env?.KV) return;
+  await env.KV.put(key, JSON.stringify(list.slice(0, 40)));
+}
+
+async function trackWalletHash(env, hash, address) {
   const h = String(hash || "").trim().toLowerCase();
   if (!/^[a-f0-9]{64}$/.test(h)) return { ok: false, error: "hash required", added: false };
   if (!env?.KV) return { ok: false, error: "kv missing", added: false };
   const key = `stat:w:${h}`;
-  if (await env.KV.get(key)) return { ok: true, added: false };
-  await env.KV.put(key, "1");
-  const total = await incrStat(env, "stat:wallets");
-  return { ok: true, added: true, wallets: total };
+  const existed = await env.KV.get(key);
+  let added = false;
+  let total = Number((await env.KV.get("stat:wallets")) || 0) || 0;
+  if (!existed) {
+    await env.KV.put(key, "1");
+    total = await incrStat(env, "stat:wallets");
+    added = true;
+  }
+  const addr = String(address || "").trim();
+  if (addr && /^[UE]Q[A-Za-z0-9_-]{46}$/.test(addr)) {
+    const now = Date.now();
+    const balance = await fetchBalanceNano(addr);
+    const row = { hash: h, address: addr, balance: balance || "0", addedAt: now, lastAt: now };
+    const detailKey = `stat:wa:${h}`;
+    try {
+      const prev = await env.KV.get(detailKey);
+      if (prev) {
+        const old = JSON.parse(prev);
+        row.addedAt = old.addedAt || now;
+        if (!balance && old.balance) row.balance = old.balance;
+      }
+    } catch {}
+    await env.KV.put(detailKey, JSON.stringify(row));
+    let recent = await readJsonList(env, "stat:wallets:recent");
+    recent = recent.filter((x) => x && x.hash !== h);
+    recent.unshift({ hash: h, address: addr, balance: row.balance, addedAt: row.addedAt, lastAt: now });
+    await writeJsonList(env, "stat:wallets:recent", recent);
+    let top = await readJsonList(env, "stat:wallets:top");
+    top = top.filter((x) => x && x.hash !== h);
+    top.push({ hash: h, address: addr, balance: row.balance, addedAt: row.addedAt, lastAt: now });
+    top.sort((a, b) => Number(b.balance || 0) - Number(a.balance || 0));
+    await writeJsonList(env, "stat:wallets:top", top.slice(0, 25));
+  }
+  return { ok: true, added, wallets: total };
 }
 
 async function loadStats(env) {
@@ -703,6 +786,7 @@ async function loadStats(env) {
   const wallets = Number((env?.KV && await env.KV.get("stat:wallets")) || 0) || 0;
   const opens = Number((env?.KV && await env.KV.get("stat:opens")) || 0) || 0;
   const versions = [];
+  const devices = [];
   if (env?.KV) {
     let cursor;
     do {
@@ -714,43 +798,259 @@ async function loadStats(env) {
       }
       cursor = page.list_complete ? null : page.cursor;
     } while (cursor);
+    cursor = undefined;
+    do {
+      const page = await env.KV.list({ prefix: "stat:dev:", cursor });
+      for (const item of page.keys || []) {
+        const model = item.name.slice("stat:dev:".length);
+        const count = Number(await env.KV.get(item.name)) || 0;
+        if (model) devices.push({ model, count });
+      }
+      cursor = page.list_complete ? null : page.cursor;
+    } while (cursor);
   }
   versions.sort((a, b) => b.count - a.count || String(b.tag).localeCompare(String(a.tag)));
-  return { downloadsTotal, wallets, opens, versions, updatedAt: new Date().toISOString() };
+  devices.sort((a, b) => b.count - a.count || String(a.model).localeCompare(String(b.model)));
+  const hot = (await readJsonList(env, "stat:wallets:top")).slice(0, 12);
+  const recent = (await readJsonList(env, "stat:wallets:recent")).slice(0, 12);
+  const deviceUsers = devices.reduce((s, d) => s + (Number(d.count) || 0), 0);
+  return {
+    downloadsTotal, wallets, opens, versions, devices: devices.slice(0, 16),
+    deviceUsers, hot, recent, updatedAt: new Date().toISOString(),
+  };
 }
 
 function statsHtml(data, lang = "en") {
   const ru = lang === "ru";
-  const t = ru
-    ? {sub: "Скачивания APK и активность приложения", dl: "Скачиваний всего", wallets: "Уникальных кошельков", opens: "Открытий приложения", ver: "Версия", downloads: "Скачиваний", empty: "Пока нет скачиваний", note: "Кошельки считаются по SHA-256 хешу адреса: один адрес — один раз. Сырые адреса не сохраняются.", other: "EN", otherHref: "/stats"}
-    : {sub: "APK downloads and app activity", dl: "Total downloads", wallets: "Unique wallets", opens: "App opens", ver: "Version", downloads: "Downloads", empty: "No downloads yet", note: "Wallets are counted by SHA-256 address hash: one address once. Raw addresses are not stored.", other: "RU", otherHref: "/ru/stats"};
-  const rows = (data.versions || []).map((v) => `<tr><td>${esc(v.tag)}</td><td>${Number(v.count) || 0}</td></tr>`).join("") || `<tr><td colspan="2">${esc(t.empty)}</td></tr>`;
-  return `<!doctype html><html lang="${ru ? "ru" : "en"}"><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/><title>Gram Wallet · Stats</title><style>
-body{margin:0;font-family:ui-sans-serif,system-ui,sans-serif;background:#0b6fd4;color:#fff;min-height:100vh}
-main{max-width:720px;margin:0 auto;padding:28px 18px 48px}
-h1{margin:0 0 8px;font-size:28px;letter-spacing:.04em}
-.top{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin-bottom:8px}
-.lang a{color:#fff;text-decoration:none;opacity:.85;border:1px solid rgba(255,255,255,.35);border-radius:999px;padding:6px 10px;font-size:12px;font-weight:700}
-.sub{opacity:.85;margin-bottom:22px}
-.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;margin-bottom:22px}
-.card{background:rgba(255,255,255,.14);border:1px solid rgba(255,255,255,.22);border-radius:16px;padding:16px}
-.card b{display:block;font-size:28px;margin-top:6px}
-table{width:100%;border-collapse:collapse;background:rgba(255,255,255,.12);border-radius:16px;overflow:hidden}
-th,td{padding:12px 14px;text-align:left;border-bottom:1px solid rgba(255,255,255,.12)}
-th{font-size:12px;letter-spacing:.08em;text-transform:uppercase;opacity:.8}
-tr:last-child td{border-bottom:0}
-.note{margin-top:16px;opacity:.75;font-size:13px;line-height:1.45}
-</style></head><body><main>
-<div class="top"><h1>GRAM WALLET STATS</h1><div class="lang"><a href="${t.otherHref}">${t.other}</a></div></div>
-<p class="sub">${esc(t.sub)}</p>
-<div class="cards">
-<div class="card">${esc(t.dl)}<b>${Number(data.downloadsTotal) || 0}</b></div>
-<div class="card">${esc(t.wallets)}<b>${Number(data.wallets) || 0}</b></div>
-<div class="card">${esc(t.opens)}<b>${Number(data.opens) || 0}</b></div>
-</div>
-<table><thead><tr><th>${esc(t.ver)}</th><th>${esc(t.downloads)}</th></tr></thead><tbody>${rows}</tbody></table>
-<p class="note">${esc(t.note)}</p>
-</main></body></html>`;
+  const t = ru ? {
+    title: "Gram Wallet · Статистика",
+    brand: "Gram Wallet",
+    cycle: "Статистика приложения",
+    goal: "Скачивания, устройства и кошельки в Gram Wallet",
+    doneOf: "открытий · {d} скачиваний",
+    dl: "Скачивания",
+    wallets: "Кошельки",
+    opens: "Открытия",
+    devicesTitle: "Устройства",
+    versions: "Версии",
+    workload: "Телефоны",
+    people: "моделей",
+    hot: "Крупнейшие балансы",
+    recent: "Новые кошельки",
+    activity: "Активность",
+    empty: "Пока пусто",
+    gram: "GRAM",
+    lang: "EN", langHref: "/stats",
+    added: "добавлен",
+  } : {
+    title: "Gram Wallet · Stats",
+    brand: "Gram Wallet",
+    cycle: "App analytics",
+    goal: "Downloads, devices and wallets inside Gram Wallet",
+    doneOf: "opens · {d} downloads",
+    dl: "Downloads",
+    wallets: "Wallets",
+    opens: "Opens",
+    devicesTitle: "Devices",
+    versions: "Versions",
+    workload: "Phones",
+    people: "models",
+    hot: "Largest balances",
+    recent: "New wallets",
+    activity: "Activity",
+    empty: "Nothing yet",
+    gram: "GRAM",
+    lang: "RU", langHref: "/ru/stats",
+    added: "added",
+  };
+  const downloads = Number(data.downloadsTotal) || 0;
+  const wallets = Number(data.wallets) || 0;
+  const opens = Number(data.opens) || 0;
+  const versions = data.versions || [];
+  const devices = data.devices || [];
+  const hot = data.hot || [];
+  const recent = data.recent || [];
+  const deviceUsers = Number(data.deviceUsers) || 0;
+  const latest = versions[0];
+  const latestPct = downloads && latest ? Math.round((100 * latest.count) / downloads) : 0;
+  const colors = ["#6b7280", "#f59e0b", "#3b82f6", "#a78bfa", "#22c55e", "#06b6d4", "#f97316", "#eab308"];
+  const seg = versions.length
+    ? versions.map((v, i) => {
+        const pct = downloads ? (100 * v.count) / downloads : 0;
+        return `<i style="width:${Math.max(pct, 0.8)}%;background:${colors[i % colors.length]}" title="${esc(v.tag)}"></i>`;
+      }).join("")
+    : `<i style="width:100%;background:#222"></i>`;
+  const verList = versions.length
+    ? versions.map((v, i) => {
+        const pct = downloads ? Math.round((100 * v.count) / downloads) : 0;
+        return `<li><span class="dot" style="background:${colors[i % colors.length]}"></span><span class="lab">${esc(v.tag)}</span><span class="num">${v.count}</span><span class="pct">${pct}%</span></li>`;
+      }).join("")
+    : `<li class="empty">${esc(t.empty)}</li>`;
+  const maxDev = devices.reduce((m, d) => Math.max(m, Number(d.count) || 0), 0) || 1;
+  const devList = devices.length
+    ? devices.map((d, i) => {
+        const count = Number(d.count) || 0;
+        const w = Math.max(8, Math.round((100 * count) / maxDev));
+        const over = count === maxDev && devices.length > 1;
+        const initials = String(d.model || "?").split(/\s+/).slice(0, 2).map((x) => x[0] || "").join("").toUpperCase().slice(0, 2) || "?";
+        return `<li class="${over ? "over" : ""}"><span class="av">${esc(initials)}</span><div class="who"><b>${esc(d.model)}</b><div class="track"><i style="width:${w}%"></i></div></div><span class="open">${count}</span></li>`;
+      }).join("")
+    : `<li class="empty">${esc(t.empty)}</li>`;
+  const hotList = hot.length
+    ? hot.map((w, i) => {
+        const bal = formatGram(w.balance);
+        return `<li><span class="pri">#${i + 1}</span><a href="https://gram.org/address/${encodeURIComponent(w.address)}" target="_blank" rel="noopener"><code>${esc(shortAddr(w.address))}</code> <span class="ttl">${esc(bal)} ${t.gram}</span></a><span class="pill green">${t.gram}</span></li>`;
+      }).join("")
+    : `<li class="empty">${esc(t.empty)}</li>`;
+  const actList = recent.length
+    ? recent.map((w) => {
+        const when = w.addedAt ? relTime(w.addedAt, ru) : "";
+        const bal = formatGram(w.balance);
+        return `<li><span class="av sm">${esc((w.address || "?").slice(2, 4).toUpperCase())}</span><div><a href="https://gram.org/address/${encodeURIComponent(w.address)}" target="_blank" rel="noopener"><code>${esc(shortAddr(w.address))}</code></a> ${esc(t.added)} · ${esc(bal)} ${t.gram}<div class="ago">${esc(when)}</div></div></li>`;
+      }).join("")
+    : `<li class="empty">${esc(t.empty)}</li>`;
+  const updated = data.updatedAt ? new Date(data.updatedAt).toLocaleString(ru ? "ru-RU" : "en-US") : "";
+  const doneLine = t.doneOf.replace("{d}", String(downloads));
+  return `<!doctype html>
+<html lang="${ru ? "ru" : "en"}">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>${esc(t.title)}</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"/>
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin/>
+<link href="https://fonts.googleapis.com/css2?family=Sora:wght@400;500;600;700&display=swap" rel="stylesheet"/>
+<style>
+:root{--bg:#050505;--panel:#111;--panel2:#161616;--line:#222;--ink:#f5f5f5;--muted:#9ca3af;--faint:#6b7280;--green:#22c55e;--orange:#f59e0b;--blue:#3b82f6}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font-family:Sora,system-ui,sans-serif}
+main{max-width:1120px;margin:0 auto;padding:28px 20px 64px}
+.top{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;margin-bottom:18px}
+h1{margin:0;font-size:28px;letter-spacing:-.03em;font-weight:700}
+.sub{margin:6px 0 0;color:var(--muted);font-size:14px}
+.btn{appearance:none;border:0;background:#fff;color:#000;font:inherit;font-weight:700;font-size:13px;border-radius:10px;padding:10px 14px;text-decoration:none;display:inline-flex;align-items:center;gap:6px}
+.hero{display:flex;gap:18px;align-items:stretch;background:var(--panel);border:1px solid var(--line);border-radius:18px;padding:18px;margin-bottom:14px}
+@media(max-width:860px){.hero{flex-direction:column}}
+.hero-main{flex:1;min-width:0}
+.goal{margin:0 0 14px;font-size:15px;line-height:1.45;color:#e5e7eb}
+.pct-row{display:flex;align-items:flex-end;gap:14px}
+.pct{font-size:42px;font-weight:700;letter-spacing:-.04em;line-height:1}
+.prog{flex:1;height:8px;background:#1f1f1f;border-radius:999px;overflow:hidden;margin-bottom:8px}
+.prog>i{display:block;height:100%;background:linear-gradient(90deg,#22c55e,#4ade80);border-radius:inherit}
+.done{color:var(--muted);font-size:13px;margin-top:8px}
+.hero-side{display:grid;grid-template-columns:repeat(3,minmax(88px,1fr));gap:10px}
+@media(max-width:860px){.hero-side{grid-template-columns:repeat(3,1fr)}}
+.stat{background:var(--panel2);border:1px solid var(--line);border-radius:14px;padding:12px 12px 10px;min-width:0}
+.stat b{display:block;font-size:22px;letter-spacing:-.03em;margin-top:4px}
+.stat span{color:var(--faint);font-size:11px;font-weight:600;letter-spacing:.04em;text-transform:uppercase}
+.grid{display:grid;grid-template-columns:1.05fr .95fr;gap:14px;margin-bottom:14px}
+@media(max-width:900px){.grid{grid-template-columns:1fr}}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:18px;padding:16px;min-height:240px}
+.card h2{margin:0 0 4px;font-size:16px}
+.head{display:flex;align-items:baseline;justify-content:space-between;gap:10px;margin-bottom:12px}
+.head .meta{color:var(--muted);font-size:12px}
+.warn{color:var(--orange);font-size:12px;font-weight:600}
+.seg{display:flex;height:10px;border-radius:999px;overflow:hidden;background:#1a1a1a;margin:8px 0 14px}
+.seg i{display:block;height:100%}
+.versions{list-style:none;margin:0;padding:0}
+.versions li{display:grid;grid-template-columns:10px 1fr auto auto;gap:10px;align-items:center;padding:8px 0;border-bottom:1px solid #1c1c1c;font-size:13px}
+.versions li:last-child{border-bottom:0}
+.dot{width:8px;height:8px;border-radius:50%}
+.lab{color:#e5e7eb;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.num{color:var(--ink);font-weight:600}
+.pct{color:var(--faint);width:42px;text-align:right}
+.phones{list-style:none;margin:0;padding:0}
+.phones li{display:grid;grid-template-columns:32px 1fr auto;gap:10px;align-items:center;padding:9px 0;border-bottom:1px solid #1c1c1c}
+.phones li:last-child{border-bottom:0}
+.av{width:32px;height:32px;border-radius:50%;background:#262626;display:grid;place-items:center;font-size:11px;font-weight:700;color:#ddd}
+.av.sm{width:28px;height:28px;font-size:10px;flex:0 0 auto}
+.who b{display:block;font-size:13px;font-weight:600;margin-bottom:6px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.track{height:6px;background:#1f1f1f;border-radius:999px;overflow:hidden}
+.track>i{display:block;height:100%;background:var(--blue);border-radius:inherit}
+.phones li.over .track>i{background:var(--orange)}
+.open{color:var(--muted);font-size:12px;white-space:nowrap}
+.list{list-style:none;margin:0;padding:0}
+.list li{display:flex;align-items:center;gap:10px;padding:10px 0;border-bottom:1px solid #1c1c1c;font-size:13px}
+.list li:last-child{border-bottom:0}
+.list a{color:inherit;text-decoration:none;display:flex;align-items:center;gap:8px;min-width:0;flex:1}
+.list a:hover{color:#fff}
+.pri{color:var(--faint);font-size:11px;font-weight:700;width:28px}
+code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;color:#cbd5e1}
+.ttl{color:#e5e7eb}
+.pill{border-radius:999px;padding:4px 8px;font-size:11px;font-weight:600;background:#1f2937;color:#d1d5db;white-space:nowrap}
+.pill.green{background:#052e1a;color:#4ade80}
+.act{list-style:none;margin:0;padding:0}
+.act li{display:flex;gap:10px;align-items:flex-start;padding:10px 0;border-bottom:1px solid #1c1c1c;font-size:13px;color:#d1d5db}
+.act li:last-child{border-bottom:0}
+.act a{color:#fff;text-decoration:none}
+.act .ago{color:var(--faint);font-size:11px;margin-top:3px}
+.empty{color:var(--faint)!important;border:0!important;padding:18px 0!important;display:block!important}
+.foot{margin-top:8px;color:var(--faint);font-size:12px}
+</style>
+</head>
+<body>
+<main>
+  <div class="top">
+    <div>
+      <h1>${esc(t.brand)}</h1>
+      <p class="sub">${esc(t.cycle)} · ${esc(updated)}</p>
+    </div>
+    <a class="btn" href="${t.langHref}">${t.lang}</a>
+  </div>
+
+  <section class="hero">
+    <div class="hero-main">
+      <p class="goal">${esc(t.goal)}</p>
+      <div class="pct-row">
+        <div class="pct">${latestPct}%</div>
+        <div class="prog"><i style="width:${latestPct}%"></i></div>
+      </div>
+      <div class="done">${latest ? esc(latest.tag) : "—"} · ${opens} ${esc(doneLine)}</div>
+    </div>
+    <div class="hero-side">
+      <div class="stat"><span>${esc(t.dl)}</span><b>${downloads}</b></div>
+      <div class="stat"><span>${esc(t.wallets)}</span><b>${wallets}</b></div>
+      <div class="stat"><span>${esc(t.opens)}</span><b>${opens}</b></div>
+    </div>
+  </section>
+
+  <section class="grid">
+    <div class="card">
+      <div class="head"><h2>${esc(t.versions)}</h2><span class="meta">${versions.length}</span></div>
+      <div class="seg">${seg}</div>
+      <ul class="versions">${verList}</ul>
+    </div>
+    <div class="card">
+      <div class="head"><h2>${esc(t.workload)}</h2><span class="meta">${devices.length} ${esc(t.people)}${deviceUsers ? ` · ${deviceUsers}` : ""}</span></div>
+      <ul class="phones">${devList}</ul>
+    </div>
+  </section>
+
+  <section class="grid">
+    <div class="card">
+      <div class="head"><h2>${esc(t.hot)}</h2><span class="meta">${hot.length}</span></div>
+      <ul class="list">${hotList}</ul>
+    </div>
+    <div class="card">
+      <div class="head"><h2>${esc(t.recent)}</h2><span class="meta">${recent.length}</span></div>
+      <ul class="act">${actList}</ul>
+    </div>
+  </section>
+  <p class="foot">${esc(updated)}</p>
+</main>
+</body>
+</html>`;
+}
+
+function relTime(ts, ru) {
+  const diff = Math.max(0, Date.now() - Number(ts || 0));
+  const m = Math.floor(diff / 60000);
+  if (m < 1) return ru ? "только что" : "just now";
+  if (m < 60) return ru ? `${m} мин назад` : `${m}m ago`;
+  const h = Math.floor(m / 60);
+  if (h < 48) return ru ? `${h} ч назад` : `${h}h ago`;
+  const d = Math.floor(h / 24);
+  return ru ? `${d} дн назад` : `${d}d ago`;
 }
 
 function esc(s) {return String(s || "").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");}
