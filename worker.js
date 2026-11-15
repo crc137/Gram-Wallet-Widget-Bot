@@ -1043,7 +1043,7 @@ function statsHtml(data, lang = "en") {
     const tone = i === 0 ? "r1" : i === 1 ? "r2" : i === 2 ? "r3" : "rn";
     const fracHtml = parts.frac ? `<span class="frac">.${esc(parts.frac)}</span>` : "";
     const title = mid.tail? `<span class="title mono" title="${esc(w.address)}"><span class="head">${esc(mid.head)}</span><span class="tail">${esc(mid.tail)}</span></span>`: `<span class="title mono">${esc(mid.head)}</span>`;
-    return `<a class="row" href="https://tonviewer.com/${esc(w.address)}" target="_blank" rel="noopener"><span class="rank ${tone}">${i + 1}</span><span class="who">${title}<span class="share"><span style="width:${pct}%"></span></span></span><span class="amount"><span class="ton"><span class="num">${esc(parts.whole)}${fracHtml}</span><span class="unit"> ${t.gram}</span><img class="coin" src="https://gram.org/assets/gem-blue.v1.webp" alt="" width="16" height="16" decoding="async"/></span>${usd ? `<small class="muted">${esc(usd)}</small>` : ""}</span></a>`;
+    return `<a class="row" href="https://gram.org/address/${esc(w.address)}" target="_blank" rel="noopener"><span class="rank ${tone}">${i + 1}</span><span class="who">${title}<span class="share"><span style="width:${pct}%"></span></span></span><span class="amount"><span class="ton"><span class="num">${esc(parts.whole)}${fracHtml}</span><span class="unit"> ${t.gram}</span><img class="coin" src="https://gram.org/assets/gem-blue.v1.webp" alt="" width="16" height="16" decoding="async"/></span>${usd ? `<small class="muted">${esc(usd)}</small>` : ""}</span></a>`;
   }).join("") || `<div class="empty">${esc(t.empty)}</div>`;
 
   const newRows = (data.recentApp || []).slice(0, 10).map(w => {
@@ -1164,7 +1164,6 @@ ul li.empty{padding:14px 16px;color:var(--mute2);font-size:13px}
         <h2>${esc(t.hero)}</h2>
         <span class="meta">${esc(t.dl)}</span>
       </div>
-      <span class="badge"><i></i>${esc(t.live)}</span>
     </header>
     <div class="panel">
       <div class="hero-grid">
