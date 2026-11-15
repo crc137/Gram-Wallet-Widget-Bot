@@ -59,15 +59,16 @@ export default {
       if (env.WEBHOOK_SECRET && url.searchParams.get("s") !== env.WEBHOOK_SECRET) {return new Response("forbidden", { status: 403 })}
       let update;
       try { update = await request.json(); } catch { return new Response("bad request", { status: 400 }); }
-      await handleUpdate(update, env);
+      ctx.waitUntil(handleUpdateOnce(update, env));
       return json({ ok: true });
     }
     if (request.method === "POST" && url.pathname === "/setup") {
       if (!env.BOT_TOKEN) return json({ ok: false, error: "BOT_TOKEN missing" }, 500);
       const secret = env.WEBHOOK_SECRET || "";
-      const hook = `${url.origin}/webhook${secret ? `?s=${encodeURIComponent(secret)}` : ""}`;
+      const origin = String(env.PUBLIC_BASE || "https://gramwalletwidget.coonlink.com").replace(/\/$/, "");
+      const hook = `${origin}/webhook${secret ? `?s=${encodeURIComponent(secret)}` : ""}`;
       const r = await tg(env.BOT_TOKEN, "setWebhook", {url: hook,allowed_updates: ["message", "callback_query", "pre_checkout_query"],drop_pending_updates: true});
-      return json(r);
+      return json({ ...r, webhook: hook });
     }
     if (request.method === "POST" && url.pathname === "/push-channel") {
       if (!env.BOT_TOKEN) return json({ ok: false, error: "BOT_TOKEN missing" }, 500);
@@ -78,6 +79,17 @@ export default {
   },
   async scheduled(event, env, ctx) {ctx.waitUntil(checkNewRelease(env))}
 };
+
+async function handleUpdateOnce(update, env) {
+  const id = update?.update_id;
+  if (id != null && env?.KV) {
+    const key = `upd:${id}`;
+    const prev = await env.KV.get(key);
+    if (prev) return;
+    await env.KV.put(key, "1", { expirationTtl: 60 * 60 * 24 });
+  }
+  return handleUpdate(update, env);
+}
 
 async function handleUpdate(update, env) {
   const token = env.BOT_TOKEN;
