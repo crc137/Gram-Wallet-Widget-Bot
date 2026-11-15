@@ -21,6 +21,10 @@ export default {
       const tasks = await loadTasks(env);
       return json({ ok: true, tasks }, 200, { "cache-control": "public, max-age=60" });
     }
+    if (request.method === "GET" && url.pathname === "/ads") {
+      const ads = await loadAds(env);
+      return json({ ok: true, ads }, 200, { "cache-control": "public, max-age=60" });
+    }
     if (request.method === "GET" && url.pathname === "/donor") {
       const address = String(url.searchParams.get("address") || "").trim();
       if (!address) return json({ ok: false, donor: false, error: "address required" }, 400);
@@ -649,6 +653,24 @@ async function loadTasks(env) {
     }
   } catch (err) {console.error(JSON.stringify({ tasksLoad: String(err) }));}
   return DEFAULT_TASKS;
+}
+
+const DEFAULT_ADS = [
+  {id: "support", url: "https://t.me/GramWalletWidget", title: "Support the project", title_ru: "Поддержи проект", hint: "Donate - ads off for supporters", hint_ru: "Донат - спонсорам без рекламы"},
+  {id: "channel", url: "https://t.me/GramWalletWidget", title: "Gram Wallet channel", title_ru: "Канал Gram Wallet", hint: "News and updates", hint_ru: "Новости и обновления"},
+  {id: "coonlink", url: "https://t.me/coonlink", title: "CoonLink", title_ru: "CoonLink", hint: "Author channel", hint_ru: "Канал автора"},
+];
+
+async function loadAds(env) {
+  try {
+    const raw = env?.KV ? await env.KV.get("ads:list") : null;
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed) && parsed.length) {return parsed.filter(a => a && a.id && a.url);}
+      if (parsed && Array.isArray(parsed.ads) && parsed.ads.length) {return parsed.ads.filter(a => a && a.id && a.url);}
+    }
+  } catch (err) {console.error(JSON.stringify({ adsLoad: String(err) }));}
+  return DEFAULT_ADS;
 }
 
 function json(data, status = 200, extraHeaders = {}) {return new Response(JSON.stringify(data), {status, headers: {"content-type": "application/json", ...extraHeaders}});}
